@@ -12,8 +12,8 @@ targets:
       path: GHT63iOS/Info.plist
       properties:
         CFBundleDisplayName: GHT63
-        CFBundleShortVersionString: 1.0.1
-        CFBundleVersion: "2"
+        CFBundleShortVersionString: 1.0.2
+        CFBundleVersion: "3"
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
         UISupportedInterfaceOrientations:
