@@ -11,8 +11,10 @@ targets:
       # 内嵌 Python 标准库（CI 里从 BeeWare 包拷出，真机 slice，见 workflow）
       - path: python
         type: folder
-    frameworks:
-      - path: Python.xcframework
+    # 注意：XcodeGen 没有 target 级 frameworks 键，预编译框架必须走 dependencies 的 framework 项，
+    # 之前 frameworks 写法被静默忽略，工程里根本没链 Python 框架（第 17 次构建的探查已证实）。
+    dependencies:
+      - framework: Python.xcframework
         embed: true
     info:
       path: GHT63iOS/Info.plist
