@@ -34,6 +34,7 @@ final class PlayerModel: ObservableObject {
         self.currentLineIdx = lineIdx
         self.currentEp = startEpisode
         self.speed = Store.shared.speed(for: group.name)
+        ErrorLog.append("播放器创建 \(group.name) - \(startEpisode.title)")
     }
 
     var isEmby: Bool { currentEp.url.hasPrefix("emby:") }

@@ -69,8 +69,11 @@ struct DetailView: View {
                     HStack(spacing: 12) {
                         Button(resumeEp == nil ? "播放" : "继续播放") {
                             if let ep = resumeEp ?? line?.episodes.first {
+                                ErrorLog.append("点播放 \(group.name) - \(ep.title) url=\(ep.url)")
                                 playEp = ep
                                 showPlayer = true
+                            } else {
+                                ErrorLog.append("点播放无集可播 \(group.name)")
                             }
                         }
                         .buttonStyle(.borderedProminent)
@@ -111,6 +114,7 @@ struct DetailView: View {
                                 let watched = (store.localProgress[ep.url]?.0 ?? 0) > 5
                                 let isResume = resumeEp.map { $0 == ep } ?? false
                                 Button {
+                                    ErrorLog.append("点选集 \(group.name) - \(ep.title) url=\(ep.url)")
                                     playEp = ep; showPlayer = true
                                 } label: {
                                     VStack(spacing: 2) {
@@ -149,6 +153,15 @@ struct DetailView: View {
                 PlayerView(group: group, sourceIdx: idx.0, lineIdx: idx.1, startEpisode: ep,
                            sourceLabel: group.sources[idx.0].sourceLabel,
                            lineLabel: group.sources[idx.0].lines[idx.1].label)
+            } else {
+                // 空 cover 绝不能再是纯黑：给个能退出的界面
+                VStack(spacing: 16) {
+                    Text("没有可播的集").foregroundColor(.white)
+                    Button("关闭") { showPlayer = false }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.black)
+                .onAppear { ErrorLog.append("播放器空壳：showPlayer 已开但 playEp 为空 \(group.name)") }
             }
         }
     }
