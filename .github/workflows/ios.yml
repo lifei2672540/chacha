@@ -30,7 +30,14 @@ jobs:
           # 扩展模块 .so 不在根 lib 里，在真机 slice 的 lib-arm64 下（含 _ssl），必须一起拷
           cp -R py-support/Python.xcframework/ios-arm64/lib-arm64/python3.11/lib-dynload python/lib/python3.11/
           cp -R py-support/Python.xcframework ./Python.xcframework
+          # 签名墙实验：放 Resources/python 下的 .so AltStore 不签，iOS 拒绝加载
+          # （真机 dlopen 报错 code signature）；改放进 Python.framework 内，让 AltStore
+          # 签名框架时一并覆盖；资源目录下只留空壳，避免未签名的副本被先找到
+          mkdir -p Python.xcframework/ios-arm64/Python.framework/lib-dynload
+          cp py-support/Python.xcframework/ios-arm64/lib-arm64/python3.11/lib-dynload/*.so Python.xcframework/ios-arm64/Python.framework/lib-dynload/
+          rm -f python/lib/python3.11/lib-dynload/*.so
           echo "--- bundle inputs ---"
+          ls Python.xcframework/ios-arm64/Python.framework/lib-dynload | wc -l
           ls python/lib/python3.11/lib-dynload | wc -l
           du -sh python Python.xcframework
       - name: Vendor pure Python deps (stage 2)
