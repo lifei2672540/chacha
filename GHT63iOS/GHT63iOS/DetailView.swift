@@ -97,7 +97,7 @@ struct DetailView: View {
                                     }
                                     .frame(maxWidth: .infinity)
                                     .padding(.vertical, 8)
-                                    .background(Color.blue.opacity(0.12))
+                                    .background(Color.white.opacity(0.1))
                                     .cornerRadius(8)
                                 }
                                 .buttonStyle(.plain)
@@ -152,7 +152,7 @@ struct FlowChips: View {
             ForEach(items.indices, id: \.self) { i in
                 Button(items[i]) { onTap(i) }
                     .buttonStyle(.borderedProminent)
-                    .tint(selected == i ? .blue : .gray)
+                    .tint(selected == i ? .red : .gray)
             }
         }
     }

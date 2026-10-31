@@ -5,21 +5,35 @@ import SwiftUI
 struct PosterCard: View {
     var group: VodGroup
     var width: CGFloat = 110
+    /// 首个源的备注（如“更新至32集”“HD”）作角标，比光秃的海报像个视频 App。
+    private var badge: String { group.sources.first?.remarks ?? "" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            AsyncImage(url: URL(string: group.pic)) { phase in
-                switch phase {
-                case .success(let img): img.resizable().scaledToFill()
-                default: Color.gray.opacity(0.3)
+            ZStack(alignment: .topTrailing) {
+                AsyncImage(url: URL(string: group.pic)) { phase in
+                    switch phase {
+                    case .success(let img): img.resizable().scaledToFill()
+                    default: Color.gray.opacity(0.3)
+                    }
+                }
+                .frame(width: width, height: width * 1.4)
+                .clipped()
+                .cornerRadius(12)
+                if !badge.isEmpty {
+                    Text(badge)
+                        .font(.caption2.bold())
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Color.black.opacity(0.65))
+                        .cornerRadius(6)
+                        .padding(6)
+                        .lineLimit(1)
                 }
             }
-            .frame(width: width, height: width * 1.4)
-            .clipped()
-            .cornerRadius(8)
-            Text(group.name).font(.subheadline).lineLimit(1)
+            Text(group.name).font(.subheadline).foregroundColor(.white).lineLimit(1)
             Text([group.typeName, group.year].filter { !$0.isEmpty }.joined(separator: " · "))
-                .font(.caption).foregroundColor(.secondary).lineLimit(1)
+                .font(.caption).foregroundColor(.gray).lineLimit(1)
         }
         .frame(width: width, alignment: .leading)
     }
@@ -31,7 +45,7 @@ struct SectionRow: View {
     var body: some View {
         if !groups.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                Text(title).font(.headline).padding(.horizontal)
+                Text(title).font(.title3.bold()).foregroundColor(.white).padding(.horizontal)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {
                         ForEach(groups) { g in
@@ -43,6 +57,35 @@ struct SectionRow: View {
                 }
             }
         }
+    }
+}
+
+/// 首页横幅：大图 + 底部渐变 + 标题 + 播放入口。
+struct HeroBanner: View {
+    var group: VodGroup
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            AsyncImage(url: URL(string: group.pic)) { phase in
+                switch phase {
+                case .success(let img): img.resizable().scaledToFill()
+                default: Color.gray.opacity(0.3)
+                }
+            }
+            .frame(height: 200)
+            .clipped()
+            LinearGradient(colors: [.clear, .black.opacity(0.85)], startPoint: .top, endPoint: .bottom)
+                .frame(height: 200)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(group.name).font(.title2.bold()).foregroundColor(.white).lineLimit(1)
+                Text([group.typeName, group.year].filter { !$0.isEmpty }.joined(separator: " · "))
+                    .font(.subheadline).foregroundColor(.white.opacity(0.8))
+                Text("▶ 播放").font(.subheadline.bold()).foregroundColor(.white)
+                    .padding(.horizontal, 16).padding(.vertical, 6)
+                    .background(Color.red).cornerRadius(20)
+            }
+            .padding()
+        }
+        .cornerRadius(16)
     }
 }
 
@@ -75,9 +118,24 @@ struct HomeView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
+                    // 顶栏品牌行（不再用系统大标题）+ 横幅大图（TV 横幅首页同款）
+                    HStack(alignment: .bottom, spacing: 8) {
+                        Text("GHT63").font(.title.bold()).foregroundColor(.white)
+                        Text("多源聚合点播").font(.caption).foregroundColor(.gray)
+                        Spacer()
+                        Button("刷新") { Task { await load() } }
+                    }
+                    .padding(.horizontal)
+                    if let hero = cats["今日热播"]?.first {
+                        NavigationLink(value: hero) {
+                            HeroBanner(group: hero)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal)
+                    }
                     if !store.recents.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("最近观看").font(.headline).padding(.horizontal)
+                            Text("最近观看").font(.title3.bold()).foregroundColor(.white).padding(.horizontal)
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(spacing: 12) {
                                     ForEach(store.recents) { r in
@@ -101,7 +159,6 @@ struct HomeView: View {
                 }
                 .padding(.vertical)
             }
-            .navigationTitle("GHT63")
             .refreshable { await load() }
             .task { await load() }
             .navigationDestination(for: VodGroup.self) { g in DetailView(group: g) }
@@ -219,7 +276,7 @@ struct SearchView: View {
                                 Task { await search(reset: true) }
                             }
                             .buttonStyle(.borderedProminent)
-                            .tint(type == t.1 ? .blue : .gray)
+                            .tint(type == t.1 ? .red : .gray)
                         }
                     }
                     .padding(.horizontal)
