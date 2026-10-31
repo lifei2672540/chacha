@@ -10,6 +10,29 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Fetch Python (BeeWare 3.11, iOS)
+        working-directory: GHT63iOS
+        run: |
+          set -e
+          TAG=$(curl -s "https://api.github.com/repos/beeware/python-apple-support/releases?per_page=100" | python3 -c "import sys,json; rs=json.load(sys.stdin); print(next(r['tag_name'] for r in rs if r['tag_name'].startswith('3.11-')))")
+          echo "BeeWare tag: $TAG"
+          ASSET=$(curl -s "https://api.github.com/repos/beeware/python-apple-support/releases/tags/$TAG" | python3 -c "import sys,json; r=json.load(sys.stdin); print(next(a['browser_download_url'] for a in r['assets'] if 'iOS' in a['name']))")
+          echo "Asset: $ASSET"
+          curl -L -o python-ios.tar.gz "$ASSET"
+          mkdir -p py-support && tar xzf python-ios.tar.gz -C py-support
+          echo "--- layout ---"
+          find py-support -maxdepth 4 | head -60
+          PYLIB=$(find py-support -type d -name "python3.11" | grep -v simulator | head -1)
+          if [ -z "$PYLIB" ]; then PYLIB=$(find py-support -type d -name "python3.11" | head -1); fi
+          echo "stdlib at: $PYLIB"
+          test -n "$PYLIB"
+          mkdir -p python/lib
+          cp -R "$PYLIB" python/lib/
+          if [ -d "$(dirname "$PYLIB")/lib-dynload" ]; then cp -R "$(dirname "$PYLIB")/lib-dynload" python/lib/; fi
+          cp -R py-support/Python.xcframework ./Python.xcframework
+          echo "--- bundle inputs ---"
+          ls python/lib | head
+          du -sh python Python.xcframework
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate project
