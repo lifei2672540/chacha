@@ -1,0 +1,20 @@
+name: GHT63iOS
+options:
+  bundleIdPrefix: com.ght63
+targets:
+  GHT63iOS:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: GHT63iOS
+    info:
+      path: GHT63iOS/Info.plist
+      properties:
+        CFBundleShortVersionString: 1.0.0
+        CFBundleVersion: "1"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ght63.ios
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
