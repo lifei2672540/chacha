@@ -35,7 +35,7 @@ struct DetailView: View {
     }
     /// 换源/换线路/进页时：续播集在当前线路里就停它那组，否则回第一组。
     private func resetEpGroup() {
-        if let r = resumeEp, let idx = eps.firstIndex(r) { epGroup = idx / 30 }
+        if let r = resumeEp, let idx = eps.firstIndex(of: r) { epGroup = idx / 30 }
         else { epGroup = 0 }
     }
 
