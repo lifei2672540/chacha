@@ -13,6 +13,8 @@ struct PlayLine: Identifiable, Codable, Hashable {
     var lineIndex: Int
     var episodes: [Episode]
     var label: String
+    /// PY 线路在 vod_play_from 里的 flag，播放时传给 playerContent（TV 同款）。
+    var pyFlag: String = ""
 }
 
 struct VodSource: Identifiable, Codable, Hashable {
@@ -36,6 +38,11 @@ struct VodGroup: Identifiable, Codable, Hashable {
     var embyId: String = ""
     var embyServer: String = ""
     var embyToken: String = ""
+    /// PY 组：pyApi 非空即 PY 组，播放走 playerContent 解析，不走 CMS 直链。
+    var pyApi: String = ""
+    var pyExt: String = ""
+    /// PY 浏览列表项的 vod_id（详情页用它调 detailContent；CMS 组不用）。
+    var vodId: String = ""
 
     var allEpisodes: Int { sources.flatMap { $0.lines }.flatMap { $0.episodes }.count }
 }
@@ -136,6 +143,10 @@ struct RecentItem: Identifiable, Codable, Hashable {
     var epIndex: Int
     var totalEps: Int
     var updated: Double
+    /// PY 剧续播用：url 是蜘蛛播放 id，须凭这三个字段重新解析（TV 同款）。
+    var pyApi: String = ""
+    var pyFlag: String = ""
+    var pyExt: String = ""
 }
 
 struct ProgressRec {

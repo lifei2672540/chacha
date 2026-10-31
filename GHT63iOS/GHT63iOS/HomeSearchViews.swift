@@ -133,6 +133,20 @@ struct HomeView: View {
                         .buttonStyle(.plain)
                         .padding(.horizontal)
                     }
+                    // PY 订阅入口（TV 版首页 PY 订阅卡同款；纯 Python 子集）
+                    NavigationLink(destination: PyHomeView()) {
+                        HStack {
+                            Text("🐍 PY订阅").font(.headline).foregroundColor(.white)
+                            Spacer()
+                            Text("纯 Python 子集，能跑的源").font(.caption).foregroundColor(.gray)
+                            Image(systemName: "chevron.right").foregroundColor(.gray)
+                        }
+                        .padding()
+                        .background(Color.white.opacity(0.08))
+                        .cornerRadius(12)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal)
                     if !store.recents.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("最近观看").font(.title3.bold()).foregroundColor(.white).padding(.horizontal)
@@ -236,6 +250,15 @@ private struct RecentDetailLoader: View {
             }
         }
         .task {
+            // PY 最近：url 就是蜘蛛播放 id，CMS 搜不到，直接拼单线路组进播放器解析
+            if !recent.pyApi.isEmpty {
+                let ep = Episode(title: recent.epTitle, url: recent.url)
+                let line = PlayLine(lineIndex: 1, episodes: [ep], label: "", pyFlag: recent.pyFlag)
+                let src = VodSource(sourceLabel: "PY", remarks: "", actor: "", director: "", lines: [line])
+                group = VodGroup(name: recent.drama, pic: recent.pic, typeName: "", year: "", content: "",
+                                 sources: [src], pyApi: recent.pyApi, pyExt: recent.pyExt)
+                return
+            }
             do {
                 let (groups, _, _) = try await ApiClient.shared.search(wd: recent.drama, type: "", pg: 1)
                 group = groups.first { $0.name == recent.drama } ?? groups.first

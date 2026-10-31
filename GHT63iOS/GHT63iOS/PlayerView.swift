@@ -27,6 +27,7 @@ final class PlayerModel: ObservableObject {
     private var cloud: [String: ProgressRec] = [:]
     private var started = false
     private var watchdog: Task<Void, Never>?
+    private var pyTask: Task<Void, Never>?
 
     init(group: VodGroup, sourceIdx: Int, lineIdx: Int, startEpisode: Episode) {
         self.group = group
@@ -38,6 +39,8 @@ final class PlayerModel: ObservableObject {
     }
 
     var isEmby: Bool { currentEp.url.hasPrefix("emby:") }
+    /// PY 组：pyApi 非空即走 playerContent 解析，不走 CMS 直链、不走流代理。
+    var isPY: Bool { !group.pyApi.isEmpty }
     private var currentLine: PlayLine? {
         group.sources.indices.contains(currentSourceIdx)
             ? group.sources[currentSourceIdx].lines.indices.contains(currentLineIdx)
@@ -80,13 +83,59 @@ final class PlayerModel: ObservableObject {
     func buildPlay() {
         errorText = nil
         watchdog?.cancel()
+        if isPY {
+            pyTask?.cancel()
+            pyTask = Task { await buildPlayPY() }
+            return
+        }
         guard !currentEp.url.isEmpty, let url = resolveURL() else {
             errorText = "播放地址为空"
             ErrorLog.append("播不了：地址为空 \(group.name) - \(currentEp.title) 源\(currentSourceIdx) 线\(currentLineIdx)")
             return
         }
         ErrorLog.append("播放 \(group.name) - \(currentEp.title) 源\(currentSourceIdx) 线\(currentLineIdx) \(url.absoluteString)")
-        let item = AVPlayerItem(url: url)
+        playURL(url, headers: nil)
+    }
+
+    /// PY：按当前线路 pyFlag + 集 url（播放 id）调 playerContent；parse!=0 或空地址 = 换线路。
+    private func buildPlayPY() async {
+        guard !currentEp.url.isEmpty else {
+            errorText = "播放地址为空"
+            ErrorLog.append("PY播不了：地址为空 \(group.name) - \(currentEp.title) 线\(currentLineIdx)")
+            return
+        }
+        let flag = currentLine?.pyFlag ?? ""
+        let src = PySource(name: "", api: group.pyApi, ext: group.pyExt)
+        do {
+            let r = try await PyAPI.play(source: src, flag: flag, playId: currentEp.url)
+            guard !Task.isCancelled else { return }
+            if r.parse != 0 || r.url.isEmpty {
+                ErrorLog.append("PY解析换线路 parse=\(r.parse) \(group.name) - \(currentEp.title) 线\(currentLineIdx)")
+                if pyAdvance() { buildPlay() } else { errorText = "该源播不了：解析无结果" }
+                return
+            }
+            guard let url = URL(string: r.url) ?? URL(string: r.url.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? r.url) else {
+                if pyAdvance() { buildPlay() } else { errorText = "该源播不了：地址无效" }
+                return
+            }
+            ErrorLog.append("PY播放 \(group.name) - \(currentEp.title) 源\(currentSourceIdx) 线\(currentLineIdx) \(url.absoluteString)")
+            playURL(url, headers: r.headers)
+        } catch {
+            guard !Task.isCancelled else { return }
+            ErrorLog.append("PY解析失败 \(group.name) - \(currentEp.title) 线\(currentLineIdx)：\(error)")
+            if pyAdvance() { buildPlay() } else { errorText = "PY解析失败：\(String("\(error)").prefix(120))" }
+        }
+    }
+
+    /// 播真实地址：PY 的防盗链头（Referer/UA）走 AVURLAsset 选项带上。
+    private func playURL(_ url: URL, headers: [String: String]?) {
+        let item: AVPlayerItem
+        if let headers = headers, !headers.isEmpty {
+            let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
+            item = AVPlayerItem(asset: asset)
+        } else {
+            item = AVPlayerItem(url: url)
+        }
         statusObs = item.observe(\.status, options: [.new]) { [weak self] it, _ in
             if it.status == .failed {
                 Task { @MainActor in self?.handleError() }
@@ -146,18 +195,21 @@ final class PlayerModel: ObservableObject {
         let idx = (currentLine?.episodes.firstIndex(of: currentEp) ?? 0) + 1
         Store.shared.recordRecent(RecentItem(drama: group.name, epTitle: currentEp.title, url: currentEp.url,
                                              pic: group.pic, time: 0, duration: 0, epIndex: idx, totalEps: total,
-                                             updated: Date().timeIntervalSince1970))
+                                             updated: Date().timeIntervalSince1970,
+                                             pyApi: group.pyApi, pyFlag: currentLine?.pyFlag ?? "", pyExt: group.pyExt))
     }
 
     private func handleError() {
-        if !proxyTried && !isEmby {
+        // PY 不走流代理（TV 同款），失败直接换线路
+        if !proxyTried && !isEmby && !isPY {
             proxyTried = true
             notice = "直连失败，改走代理"
             ErrorLog.append("播放失败走代理 \(group.name) - \(currentEp.title)")
             buildPlay()
             return
         }
-        if advance() {
+        let moved = isPY ? pyAdvance() : advance()
+        if moved {
             notice = "该线路播不了，已自动换线路"
             ErrorLog.append("换线路 \(group.name) - \(currentEp.title) → 源\(currentSourceIdx) 线\(currentLineIdx)")
             buildPlay()
@@ -165,6 +217,34 @@ final class PlayerModel: ObservableObject {
             errorText = "播放失败：换无可换"
             ErrorLog.append("播放失败换无可换 \(group.name) - \(currentEp.title)")
         }
+    }
+
+    /// PY 解析/播放失败时换线路：同集在下一线路 → 下一源同集（越界取首集）；都没有返回 false。
+    private func pyAdvance() -> Bool {
+        guard let line = currentLine else { return false }
+        let epIdx = line.episodes.firstIndex(of: currentEp) ?? 0
+        let lines = group.sources[currentSourceIdx].lines
+        if currentLineIdx + 1 < lines.count {
+            let next = lines[currentLineIdx + 1]
+            let ep = next.episodes.indices.contains(epIdx) ? next.episodes[epIdx] : next.episodes.first
+            if let ep = ep {
+                currentLineIdx += 1
+                currentEp = ep; proxyTried = false; didSeekIntro = false
+                return true
+            }
+        }
+        if currentSourceIdx + 1 < group.sources.count {
+            currentSourceIdx += 1
+            currentLineIdx = 0
+            if let first = group.sources[currentSourceIdx].lines.first {
+                let ep = first.episodes.indices.contains(epIdx) ? first.episodes[epIdx] : first.episodes.first
+                if let ep = ep {
+                    currentEp = ep; proxyTried = false; didSeekIntro = false
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     /// 下一集：同线路下一集 → 下一线路 → 下一源；都没有返回 false。
@@ -245,6 +325,7 @@ final class PlayerModel: ObservableObject {
 
     func teardown() {
         watchdog?.cancel()
+        pyTask?.cancel()
         saveNow(seconds: player.currentTime().seconds)
         if let t = timeObs { player.removeTimeObserver(t) }
         if let e = endObs { NotificationCenter.default.removeObserver(e) }
