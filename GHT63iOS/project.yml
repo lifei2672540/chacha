@@ -23,8 +23,8 @@ targets:
       path: GHT63iOS/Info.plist
       properties:
         CFBundleDisplayName: GHT63
-        CFBundleShortVersionString: 1.1.4
-        CFBundleVersion: "8"
+        CFBundleShortVersionString: 1.1.6
+        CFBundleVersion: "10"
         # 启动屏：没有它 iOS 会把 App 当老应用 letterbox（16 Pro Max 上只占半屏）
         UILaunchScreen: {}
         NSAppTransportSecurity:
