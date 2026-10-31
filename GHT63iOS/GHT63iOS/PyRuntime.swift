@@ -1,5 +1,6 @@
 import Foundation
-import Python
+// 注意：Python C API 经 GHT63iOS-Bridging-Header.h（#import <Python/Python.h>）引入，
+// 不写 import Python——BeeWare 的 module.modulemap 在 Headers/ 下，Swift 找不到它。
 
 /// 内嵌 CPython（BeeWare 3.11）：App 启动时初始化一次。
 /// 阶段 1 只验证解释器能跑：设置页显示实测版本号。
