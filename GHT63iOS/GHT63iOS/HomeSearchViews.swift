@@ -257,6 +257,8 @@ struct SearchView: View {
     @State private var pageCount = 1
     @State private var loading = false
     @State private var error: String?
+    /// 果鉴式最近搜索：本机存，最多 8 条，点词直接搜。
+    @State private var recentKeywords: [String] = UserDefaults.standard.stringArray(forKey: "recentKeywords") ?? []
     private let types = [("全部", ""), ("电影", "1"), ("剧集", "2"), ("综艺", "3"), ("动漫", "4")]
 
     var body: some View {
@@ -281,6 +283,25 @@ struct SearchView: View {
                     }
                     .padding(.horizontal)
                 }
+                if !recentKeywords.isEmpty {
+                    HStack {
+                        Text("最近搜索").font(.caption).foregroundColor(.secondary)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack {
+                                ForEach(recentKeywords, id: \.self) { k in
+                                    Button(k) {
+                                        keyword = k
+                                        Task { await search(reset: true) }
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
+                            }
+                        }
+                        Button("清空") { recentKeywords = []; UserDefaults.standard.set([], forKey: "recentKeywords") }
+                            .font(.caption)
+                    }
+                    .padding(.horizontal)
+                }
                 ScrollView {
                     VodGrid(groups: groups).padding()
                     if page < pageCount {
@@ -297,7 +318,16 @@ struct SearchView: View {
     }
 
     private func search(reset: Bool) async {
-        if reset { page = 1; groups = [] }
+        if reset {
+            page = 1; groups = []
+            let k = keyword.trimmingCharacters(in: .whitespaces)
+            if !k.isEmpty {
+                recentKeywords.removeAll { $0 == k }
+                recentKeywords.insert(k, at: 0)
+                recentKeywords = Array(recentKeywords.prefix(8))
+                UserDefaults.standard.set(recentKeywords, forKey: "recentKeywords")
+            }
+        }
         loading = true
         error = nil
         do {

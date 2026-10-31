@@ -11,6 +11,8 @@ struct DetailView: View {
     @State private var backdrop: String?
     @State private var showPlayer = false
     @State private var playEp: Episode?
+    /// 果鉴式选集分组：每组 30 集，默认停在续播集所在组。
+    @State private var epGroup = 0
 
     private var source: VodSource? { group.sources.indices.contains(sourceIdx) ? group.sources[sourceIdx] : nil }
     private var line: PlayLine? {
@@ -22,11 +24,25 @@ struct DetailView: View {
         return group.sources.flatMap { $0.lines }.flatMap { $0.episodes }.first { $0.title == r.epTitle }
     }
     private var isFav: Bool { store.isFavorite(group.name) }
+    private var eps: [Episode] { line?.episodes ?? [] }
+    private var epGroupCount: Int { max(1, (eps.count + 29) / 30) }
+    private var shownEps: [Episode] {
+        let g = min(epGroup, epGroupCount - 1)
+        return Array(eps.dropFirst(g * 30).prefix(30))
+    }
+    private func groupLabel(_ g: Int) -> String {
+        "\(g * 30 + 1)-\(min((g + 1) * 30, eps.count))"
+    }
+    /// 换源/换线路/进页时：续播集在当前线路里就停它那组，否则回第一组。
+    private func resetEpGroup() {
+        if let r = resumeEp, let idx = eps.firstIndex(r) { epGroup = idx / 30 }
+        else { epGroup = 0 }
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                // 背景：先上 CMS 海报，TMDB 有横图再换锐图
+                // 背景：封面模糊作底（果鉴式），先上 CMS 海报，TMDB 有横图再换锐图
                 ZStack(alignment: .bottomLeading) {
                     AsyncImage(url: URL(string: backdrop ?? group.pic)) { phase in
                         switch phase {
@@ -34,6 +50,8 @@ struct DetailView: View {
                         default: Color.gray.opacity(0.3)
                         }
                     }
+                    .blur(radius: 18)
+                    .scaleEffect(1.1)
                     .frame(height: 220).clipped()
                     LinearGradient(colors: [.clear, .black.opacity(0.7)], startPoint: .top, endPoint: .bottom)
                         .frame(height: 220)
@@ -67,25 +85,31 @@ struct DetailView: View {
                     if group.sources.count > 1 {
                         Text("源").font(.headline)
                         FlowChips(items: group.sources.map { $0.sourceLabel }, selected: sourceIdx) { i in
-                            sourceIdx = i; lineIdx = 0
+                            sourceIdx = i; lineIdx = 0; resetEpGroup()
                         }
                     }
                     // 线路切换
                     if let lines = source?.lines, lines.count > 1 {
                         Text("线路").font(.headline)
                         FlowChips(items: lines.map { $0.label.isEmpty ? "线路\($0.lineIndex)" : $0.label }, selected: lineIdx) { i in
-                            lineIdx = i
+                            lineIdx = i; resetEpGroup()
                         }
                     }
-                    // 选集
-                    if let eps = line?.episodes, !eps.isEmpty {
+                    // 选集：每组 30 集；看过的集变浅，续播集红框高亮
+                    if !eps.isEmpty {
                         HStack {
                             Text("选集").font(.headline)
                             Spacer()
                             Text("\(eps.count) 集").font(.caption).foregroundColor(.secondary)
                         }
+                        if epGroupCount > 1 {
+                            FlowChips(items: (0..<epGroupCount).map { groupLabel($0) },
+                                      selected: min(epGroup, epGroupCount - 1)) { i in epGroup = i }
+                        }
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 72), spacing: 8)], spacing: 8) {
-                            ForEach(eps) { ep in
+                            ForEach(shownEps) { ep in
+                                let watched = (store.localProgress[ep.url]?.0 ?? 0) > 5
+                                let isResume = resumeEp.map { $0 == ep } ?? false
                                 Button {
                                     playEp = ep; showPlayer = true
                                 } label: {
@@ -97,10 +121,13 @@ struct DetailView: View {
                                     }
                                     .frame(maxWidth: .infinity)
                                     .padding(.vertical, 8)
-                                    .background(Color.white.opacity(0.1))
+                                    .background(isResume ? Color.red.opacity(0.25) : Color.white.opacity(0.1))
                                     .cornerRadius(8)
+                                    .overlay(RoundedRectangle(cornerRadius: 8)
+                                        .stroke(isResume ? Color.red : Color.clear, lineWidth: 1))
                                 }
                                 .buttonStyle(.plain)
+                                .opacity(watched && !isResume ? 0.45 : 1)
                             }
                         }
                     } else {
@@ -113,6 +140,8 @@ struct DetailView: View {
         .navigationTitle(group.name)
         .navigationBarTitleDisplayMode(.inline)
         .task { await loadBackdrop() }
+        // 源/线路切换已在 chips 回调里调 resetEpGroup；onAppear 覆盖进页与播完返回
+        .onAppear { resetEpGroup() }
         .fullScreenCover(isPresented: $showPlayer) {
             if let ep = playEp {
                 // 续播的集可能不在当前选中的源/线路里，按集实际位置起播
