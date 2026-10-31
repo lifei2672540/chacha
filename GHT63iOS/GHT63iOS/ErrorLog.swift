@@ -39,18 +39,21 @@ enum ErrorLog {
 
     /// 捕获未处理的 ObjC/Swift 异常（Swift 底层 trap 如强制解包 iOS 层面抓不到，
     /// 那类问题靠播放器轨迹与自检日志定位）。下次启动后日志仍在，可上传。
+    /// 注意：这个闭包会被转成 C 函数指针，里面不能引用任何 Swift 静态量
+    /// （FileManager.default、fileName 都会被判为捕获上下文而编译失败），
+    /// 只用 C 函数与字面量。
     static func installExceptionHandler() {
         NSSetUncaughtExceptionHandler { exc in
             let stack = exc.callStackSymbols.prefix(20).joined(separator: "\n")
             let entry = "[uncaught] \(exc.name) \(exc.reason ?? "?")\n\(stack)\n"
-            let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent(fileName)
-            if let h = try? FileHandle(forWritingTo: url) {
+            let dir = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first ?? ""
+            let path = (dir as NSString).appendingPathComponent("ght63ios_error.log")
+            if let h = FileHandle(forWritingAtPath: path) {
                 h.seekToEndOfFile()
                 h.write(Data(entry.utf8))
-                try? h.close()
+                h.closeFile()
             } else {
-                try? entry.write(to: url, atomically: true, encoding: .utf8)
+                try? entry.write(toFile: path, atomically: true, encoding: .utf8)
             }
         }
     }
@@ -65,7 +68,9 @@ enum ErrorLog {
         let info = Bundle.main.infoDictionary
         let ver = info?["CFBundleShortVersionString"] as? String ?? "?"
         let build = info?["CFBundleVersion"] as? String ?? "?"
-        let header = "GHT63 iOS \(ver) build \(build) \(UIDevice.current.model) iOS \(UIDevice.current.systemVersion)\n"
+        let deviceModel = await UIDevice.current.model
+        let sysVer = await UIDevice.current.systemVersion
+        let header = "GHT63 iOS \(ver) build \(build) \(deviceModel) iOS \(sysVer)\n"
         let body = header + read()
         var req = URLRequest(url: url, timeoutInterval: 30)
         req.httpMethod = "POST"
