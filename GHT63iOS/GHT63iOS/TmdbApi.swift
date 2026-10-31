@@ -5,7 +5,7 @@ import Foundation
 /// 网络失败不写缓存；空串表示查过无匹配。
 enum TmdbApi {
     static func lookup(title: String, year: String) async -> (poster: String, backdrop: String)? {
-        let key = Store.shared.tmdbKey
+        let key = await Store.shared.tmdbKey
         guard !key.isEmpty else { return nil }
         let cacheKey = "\(title)|\(year)"
         if let hit = await Store.shared.tmdbCacheGet(cacheKey) { return hit }
