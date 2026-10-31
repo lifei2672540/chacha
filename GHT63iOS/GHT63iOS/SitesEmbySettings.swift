@@ -263,7 +263,7 @@ struct SettingsView: View {
                 Section {
                     Text("端侧 PY 正在接入：解释器与蜘蛛桥已就绪，订阅浏览界面下一阶段来；Jar 不在 iOS 路线内。")
                         .font(.caption).foregroundColor(.secondary)
-                    Text("GHT63 iOS 1.2.0（原生版）").font(.caption).foregroundColor(.secondary)
+                    Text("GHT63 iOS 1.2.1（原生版）").font(.caption).foregroundColor(.secondary)
                     Text("内嵌 Python：\(PyRuntime.version)").font(.caption).foregroundColor(.secondary)
                     if !savedNote.isEmpty { Text(savedNote).font(.caption).foregroundColor(.green) }
                 }
@@ -323,8 +323,9 @@ struct SettingsView: View {
                 guard !py.isEmpty else {
                     throw PySpider.PyError.bridge("订阅里没找到 PY 源（共 \(sites.count) 个站）")
                 }
-                // 先探扩展模块：1.1.4 实测桥在 _get_spider 里因 hashlib.sha256 不可用全灭，
-                // 须探明 _hashlib/_sha2/_sha256/_ssl/ssl 各自能不能 import（缺模块还是签名问题）
+                // 先探扩展模块：1.2.0 实测 dlopen 报 code signature（AltStore 没签 .so），
+                // 1.2.1 把 .so 移进 Python.framework 内求签名覆盖；探针须报全文 + math/re
+                // （蜘蛛常用，math 已证实因签名加载不了，re 在包里连 _sre.so 都没有）
                 var probeStatus = "未探"
                 do {
                     let probeCode = """
@@ -334,12 +335,12 @@ class Spider:
         pass
     def homeContent(self, *a):
         out = {}
-        for m in ["_hashlib", "_sha2", "_sha256", "_ssl", "ssl"]:
+        for m in ["_hashlib", "_sha2", "_sha256", "_ssl", "ssl", "math", "re"]:
             try:
                 __import__(m)
                 out[m] = "ok"
             except Exception as e:
-                out[m] = "FAIL " + str(e)[:80]
+                out[m] = "FAIL " + str(e)
         return {"class": [], "list": [{"vod_name": str(out), "vod_pic": "", "vod_year": "", "vod_area": "", "vod_remarks": ""}]}
 """
                     let probeJson = try PySpider.run(code: probeCode, ext: "", method: "home", argsJson: "[]")
