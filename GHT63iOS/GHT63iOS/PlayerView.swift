@@ -26,6 +26,7 @@ final class PlayerModel: ObservableObject {
     private var sleepWork: DispatchWorkItem?
     private var cloud: [String: ProgressRec] = [:]
     private var started = false
+    private var watchdog: Task<Void, Never>?
 
     init(group: VodGroup, sourceIdx: Int, lineIdx: Int, startEpisode: Episode) {
         self.group = group
@@ -45,7 +46,17 @@ final class PlayerModel: ObservableObject {
     func start() async {
         guard !started else { return }
         started = true
-        cloud = (try? await ApiClient.shared.getProgress()) ?? [:]
+        // 云端进度最多等 8 秒，超时直接播，不让播放卡在黑屏上等网络
+        cloud = await withTaskGroup(of: [String: ProgressRec]?.self) { group in
+            group.addTask { try? await ApiClient.shared.getProgress() }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first ?? [:]
+        }
         buildPlay()
         endObs = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime, object: nil, queue: .main) { [weak self] _ in
@@ -67,14 +78,31 @@ final class PlayerModel: ObservableObject {
 
     func buildPlay() {
         errorText = nil
-        guard let url = resolveURL() else { errorText = "播放地址无效"; return }
+        watchdog?.cancel()
+        guard !currentEp.url.isEmpty, let url = resolveURL() else {
+            errorText = "播放地址为空"
+            ErrorLog.append("播不了：地址为空 \(group.name) - \(currentEp.title) 源\(currentSourceIdx) 线\(currentLineIdx)")
+            return
+        }
+        ErrorLog.append("播放 \(group.name) - \(currentEp.title) 源\(currentSourceIdx) 线\(currentLineIdx) \(url.absoluteString)")
         let item = AVPlayerItem(url: url)
         statusObs = item.observe(\.status, options: [.new]) { [weak self] it, _ in
             if it.status == .failed {
                 Task { @MainActor in self?.handleError() }
+            } else if it.status == .readyToPlay {
+                Task { @MainActor in self?.watchdog?.cancel() }
             }
         }
         player.replaceCurrentItem(with: item)
+        // 看门狗：15 秒还不出画面就按失败处理（走代理/换线路/报错），不许静默黑屏
+        watchdog = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 15_000_000_000)
+            guard !Task.isCancelled else { return }
+            if player.currentItem?.status != .readyToPlay {
+                ErrorLog.append("加载超时 15s \(group.name) - \(currentEp.title)")
+                handleError()
+            }
+        }
         // 断点：本地与云端取大者（TV 同款，>5 秒才续）
         let resume = Store.shared.resumeTime(for: currentEp.url, cloud: cloud)
         if resume > 0 {
@@ -124,14 +152,17 @@ final class PlayerModel: ObservableObject {
         if !proxyTried && !isEmby {
             proxyTried = true
             notice = "直连失败，改走代理"
+            ErrorLog.append("播放失败走代理 \(group.name) - \(currentEp.title)")
             buildPlay()
             return
         }
         if advance() {
             notice = "该线路播不了，已自动换线路"
+            ErrorLog.append("换线路 \(group.name) - \(currentEp.title) → 源\(currentSourceIdx) 线\(currentLineIdx)")
             buildPlay()
         } else {
             errorText = "播放失败：换无可换"
+            ErrorLog.append("播放失败换无可换 \(group.name) - \(currentEp.title)")
         }
     }
 
@@ -212,6 +243,7 @@ final class PlayerModel: ObservableObject {
     }
 
     func teardown() {
+        watchdog?.cancel()
         saveNow(seconds: player.currentTime().seconds)
         if let t = timeObs { player.removeTimeObserver(t) }
         if let e = endObs { NotificationCenter.default.removeObserver(e) }
@@ -295,6 +327,8 @@ private struct PlayerControllerView: UIViewControllerRepresentable {
         let vc = AVPlayerViewController()
         vc.player = player
         vc.showsPlaybackControls = true
+        // 绝不自动进系统全屏：全屏后自家关闭按钮和报错文字全没了，播不了就是纯黑屏
+        vc.entersFullScreenWhenPlaybackBegins = false
         return vc
     }
     func updateUIViewController(_ vc: AVPlayerViewController, context: Context) {

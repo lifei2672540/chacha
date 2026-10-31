@@ -7,6 +7,9 @@ struct GHT63App: App {
     init() {
         // 内嵌 Python 解释器（阶段 1：只验证能跑，版本号见设置页）
         PyRuntime.start()
+        // 报错日志：未捕获异常 + 每次启动都记一笔（崩溃后重启能对上）
+        ErrorLog.installExceptionHandler()
+        ErrorLog.append("App 启动")
     }
 
     var body: some Scene {

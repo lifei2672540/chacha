@@ -207,6 +207,7 @@ struct SettingsView: View {
     @State private var embyPw = ""
     @State private var savedNote = ""
     @State private var pyTestResult = "还没跑过"
+    @State private var logUploadResult = ""
 
     var body: some View {
         NavigationStack {
@@ -245,10 +246,24 @@ struct SettingsView: View {
                     Text(pyTestResult).font(.caption).foregroundColor(.secondary)
                     Button("跑一次自检") { runPySelfTest() }
                 }
+                Section("报错日志（TV 版同款，存到你自己服务器 upde/）") {
+                    Text(logUploadResult.isEmpty ? "播放出问题、闪退、自检失败都记在这里，上传后我能直接看到。" : logUploadResult)
+                        .font(.caption).foregroundColor(.secondary)
+                    Button("上传报错日志") {
+                        Task {
+                            let r = await ErrorLog.upload()
+                            await MainActor.run { logUploadResult = r }
+                        }
+                    }
+                    Button("清空本地日志") {
+                        ErrorLog.clear()
+                        logUploadResult = "本地日志已清空"
+                    }
+                }
                 Section {
                     Text("端侧 PY 正在接入：解释器与蜘蛛桥已就绪，订阅浏览界面下一阶段来；Jar 不在 iOS 路线内。")
                         .font(.caption).foregroundColor(.secondary)
-                    Text("GHT63 iOS 1.1.1（原生版）").font(.caption).foregroundColor(.secondary)
+                    Text("GHT63 iOS 1.1.2（原生版）").font(.caption).foregroundColor(.secondary)
                     Text("内嵌 Python：\(PyRuntime.version)").font(.caption).foregroundColor(.secondary)
                     if !savedNote.isEmpty { Text(savedNote).font(.caption).foregroundColor(.green) }
                 }
