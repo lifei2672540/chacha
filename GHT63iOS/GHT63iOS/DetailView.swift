@@ -9,7 +9,6 @@ struct DetailView: View {
     @State private var sourceIdx = 0
     @State private var lineIdx = 0
     @State private var backdrop: String?
-    @State private var showPlayer = false
     @State private var playEp: Episode?
     /// 果鉴式选集分组：每组 30 集，默认停在续播集所在组。
     @State private var epGroup = 0
@@ -71,7 +70,6 @@ struct DetailView: View {
                             if let ep = resumeEp ?? line?.episodes.first {
                                 ErrorLog.append("点播放 \(group.name) - \(ep.title) url=\(ep.url)")
                                 playEp = ep
-                                showPlayer = true
                             } else {
                                 ErrorLog.append("点播放无集可播 \(group.name)")
                             }
@@ -115,7 +113,7 @@ struct DetailView: View {
                                 let isResume = resumeEp.map { $0 == ep } ?? false
                                 Button {
                                     ErrorLog.append("点选集 \(group.name) - \(ep.title) url=\(ep.url)")
-                                    playEp = ep; showPlayer = true
+                                    playEp = ep
                                 } label: {
                                     VStack(spacing: 2) {
                                         Text(ep.title).font(.subheadline).lineLimit(1)
@@ -146,23 +144,13 @@ struct DetailView: View {
         .task { await loadBackdrop() }
         // 源/线路切换已在 chips 回调里调 resetEpGroup；onAppear 覆盖进页与播完返回
         .onAppear { resetEpGroup() }
-        .fullScreenCover(isPresented: $showPlayer) {
-            if let ep = playEp {
-                // 续播的集可能不在当前选中的源/线路里，按集实际位置起播
-                let idx = indices(for: ep)
-                PlayerView(group: group, sourceIdx: idx.0, lineIdx: idx.1, startEpisode: ep,
-                           sourceLabel: group.sources[idx.0].sourceLabel,
-                           lineLabel: group.sources[idx.0].lines[idx.1].label)
-            } else {
-                // 空 cover 绝不能再是纯黑：给个能退出的界面
-                VStack(spacing: 16) {
-                    Text("没有可播的集").foregroundColor(.white)
-                    Button("关闭") { showPlayer = false }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.black)
-                .onAppear { ErrorLog.append("播放器空壳：showPlayer 已开但 playEp 为空 \(group.name)") }
-            }
+        // 以集本身驱动打开：集不到位 cover 就打不开，杜绝“开了个空壳”这一类问题
+        .fullScreenCover(item: $playEp) { ep in
+            // 续播的集可能不在当前选中的源/线路里，按集实际位置起播
+            let idx = indices(for: ep)
+            PlayerView(group: group, sourceIdx: idx.0, lineIdx: idx.1, startEpisode: ep,
+                       sourceLabel: group.sources[idx.0].sourceLabel,
+                       lineLabel: group.sources[idx.0].lines[idx.1].label)
         }
     }
 

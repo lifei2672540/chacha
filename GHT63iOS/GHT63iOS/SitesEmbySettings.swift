@@ -263,7 +263,7 @@ struct SettingsView: View {
                 Section {
                     Text("端侧 PY 正在接入：解释器与蜘蛛桥已就绪，订阅浏览界面下一阶段来；Jar 不在 iOS 路线内。")
                         .font(.caption).foregroundColor(.secondary)
-                    Text("GHT63 iOS 1.1.4（原生版）").font(.caption).foregroundColor(.secondary)
+                    Text("GHT63 iOS 1.1.6（原生版）").font(.caption).foregroundColor(.secondary)
                     Text("内嵌 Python：\(PyRuntime.version)").font(.caption).foregroundColor(.secondary)
                     if !savedNote.isEmpty { Text(savedNote).font(.caption).foregroundColor(.green) }
                 }
@@ -323,6 +323,35 @@ struct SettingsView: View {
                 guard !py.isEmpty else {
                     throw PySpider.PyError.bridge("订阅里没找到 PY 源（共 \(sites.count) 个站）")
                 }
+                // 先探扩展模块：1.1.4 实测桥在 _get_spider 里因 hashlib.sha256 不可用全灭，
+                // 须探明 _hashlib/_sha2/_sha256/_ssl/ssl 各自能不能 import（缺模块还是签名问题）
+                var probeStatus = "未探"
+                do {
+                    let probeCode = """
+import sys
+class Spider:
+    def init(self, ext=""):
+        pass
+    def homeContent(self, *a):
+        out = {}
+        for m in ["_hashlib", "_sha2", "_sha256", "_ssl", "ssl"]:
+            try:
+                __import__(m)
+                out[m] = "ok"
+            except Exception as e:
+                out[m] = "FAIL " + str(e)[:80]
+        return {"class": [], "list": [{"vod_name": str(out), "vod_pic": "", "vod_year": "", "vod_area": "", "vod_remarks": ""}]}
+"""
+                    let probeJson = try PySpider.run(code: probeCode, ext: "", method: "home", argsJson: "[]")
+                    if let d = probeJson.data(using: .utf8),
+                       let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                       let lst = o["list"] as? [[String: Any]],
+                       let v = lst.first?["vod_name"] as? String {
+                        probeStatus = v
+                    }
+                } catch {
+                    probeStatus = "探针失败：\(error)"
+                }
                 // 阶段 2 还没有 Crypto/lxml 真轮子：跳过要它们的源，找第一个能跑的；
                 // 一个源拉取或跑 home 失败就换下一个，不直接判死刑
                 var skipped = 0
@@ -344,7 +373,7 @@ struct SettingsView: View {
                             cls = (o["class"] as? [Any])?.count ?? 0
                             lst = (o["list"] as? [Any])?.count ?? 0
                         }
-                        let out = "订阅 \(sites.count) 站，PY \(py.count) 个；跳过 \(skipped) 个要 Crypto/lxml 的源，首个能跑的 \(name)：home 分类 \(cls) 个、推荐 \(lst) 条"
+                        let out = "扩展：\(probeStatus)；订阅 \(sites.count) 站，PY \(py.count) 个；跳过 \(skipped) 个要 Crypto/lxml 的源，首个能跑的 \(name)：home 分类 \(cls) 个、推荐 \(lst) 条"
                         await MainActor.run { pyTestResult = out }
                         return
                     } catch {
@@ -352,7 +381,7 @@ struct SettingsView: View {
                         continue
                     }
                 }
-                throw PySpider.PyError.bridge("试了 \(min(10, py.count)) 个源：\(skipped) 个要 Crypto/lxml（等阶段 3），其余跑 home 失败：\(lastErr)")
+                throw PySpider.PyError.bridge("扩展：\(probeStatus)；试了 \(min(10, py.count)) 个源：\(skipped) 个要 Crypto/lxml（等阶段 3），其余跑 home 失败：\(lastErr)")
             } catch {
                 let msg = "\(error)"
                 ErrorLog.append("PY 自检失败：\(msg)")
