@@ -31,3 +31,4 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.ght63.ios
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_OBJC_BRIDGING_HEADER: GHT63iOS/GHT63iOS-Bridging-Header.h
