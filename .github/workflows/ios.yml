@@ -33,6 +33,27 @@ jobs:
           echo "--- bundle inputs ---"
           ls python/lib/python3.11/lib-dynload | wc -l
           du -sh python Python.xcframework
+      - name: Vendor pure Python deps (stage 2)
+        working-directory: GHT63iOS
+        run: |
+          set -e
+          rm -rf py-vend && mkdir -p py-vend
+          python3 -m pip download requests==2.34.2 urllib3==2.8.0 charset_normalizer==3.5.2 idna==3.20 certifi==2026.10.23 --no-deps --no-binary :all: -d py-vend/sdists -q
+          mkdir -p py-vend/x
+          for f in py-vend/sdists/*.tar.gz; do tar xzf "$f" -C py-vend/x; done
+          cp -r py-vend/x/requests-2.34.2/src/requests app/requests
+          cp -r py-vend/x/urllib3-2.8.0/src/urllib3 app/urllib3
+          cp -r py-vend/x/charset_normalizer-3.5.2/src/charset_normalizer app/charset_normalizer
+          cp -r py-vend/x/idna-3.20/idna app/idna
+          cp -r py-vend/x/certifi-2026.10.23/certifi app/certifi
+          mkdir -p app/licenses
+          cp py-vend/x/requests-2.34.2/LICENSE app/licenses/requests-LICENSE
+          cp py-vend/x/urllib3-2.8.0/LICENSE.txt app/licenses/urllib3-LICENSE
+          cp py-vend/x/charset_normalizer-3.5.2/LICENSE app/licenses/charset_normalizer-LICENSE
+          cp py-vend/x/idna-3.20/LICENSE.md app/licenses/idna-LICENSE
+          cp py-vend/x/certifi-2026.10.23/LICENSE app/licenses/certifi-LICENSE
+          echo "so files: $(find app -name '*.so' | wc -l)"
+          du -sh app
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate project
