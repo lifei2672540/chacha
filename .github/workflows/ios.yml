@@ -27,16 +27,26 @@ jobs:
           test -n "$PYLIB"
           mkdir -p python/lib
           cp -R "$PYLIB" python/lib/
-          if [ -d "$(dirname "$PYLIB")/lib-dynload" ]; then cp -R "$(dirname "$PYLIB")/lib-dynload" python/lib/; fi
+          # 扩展模块 .so 不在根 lib 里，在真机 slice 的 lib-arm64 下（含 _ssl），必须一起拷
+          cp -R py-support/Python.xcframework/ios-arm64/lib-arm64/python3.11/lib-dynload python/lib/python3.11/
           cp -R py-support/Python.xcframework ./Python.xcframework
           echo "--- bundle inputs ---"
-          ls python/lib | head
+          ls python/lib/python3.11/lib-dynload | wc -l
           du -sh python Python.xcframework
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate project
         working-directory: GHT63iOS
         run: xcodegen generate
+      - name: Probe generated project wiring
+        working-directory: GHT63iOS
+        run: |
+          echo "--- Python.xcframework refs in pbxproj ---"
+          grep -n "Python.xcframework" GHT63iOS.xcodeproj/project.pbxproj || echo "NO FRAMEWORK REF"
+          echo "--- FRAMEWORK_SEARCH_PATHS ---"
+          grep -n "FRAMEWORK_SEARCH_PATHS" -A 3 GHT63iOS.xcodeproj/project.pbxproj || echo "NO SEARCH PATHS"
+          echo "--- Embed Frameworks phase ---"
+          grep -n "Embed Frameworks" GHT63iOS.xcodeproj/project.pbxproj || echo "NO EMBED PHASE"
       - name: Archive (unsigned, for AltStore self-signing)
         working-directory: GHT63iOS
         run: |
