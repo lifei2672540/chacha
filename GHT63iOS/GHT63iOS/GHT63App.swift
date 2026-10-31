@@ -4,6 +4,11 @@ import SwiftUI
 struct GHT63App: App {
     @StateObject private var store = Store.shared
 
+    init() {
+        // 内嵌 Python 解释器（阶段 1：只验证能跑，版本号见设置页）
+        PyRuntime.start()
+    }
+
     var body: some Scene {
         WindowGroup {
             TabView {

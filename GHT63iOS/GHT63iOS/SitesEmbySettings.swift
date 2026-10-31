@@ -243,7 +243,8 @@ struct SettingsView: View {
                 Section {
                     Text("iOS 版不支持 Jar 与端侧 PY 源（系统限制：dex 与 Chaquopy 只有安卓版）。")
                         .font(.caption).foregroundColor(.secondary)
-                    Text("GHT63 iOS 1.0.0（原生版）").font(.caption).foregroundColor(.secondary)
+                    Text("GHT63 iOS 1.1.0（原生版）").font(.caption).foregroundColor(.secondary)
+                    Text("内嵌 Python：\(PyRuntime.version)").font(.caption).foregroundColor(.secondary)
                     if !savedNote.isEmpty { Text(savedNote).font(.caption).foregroundColor(.green) }
                 }
             }
