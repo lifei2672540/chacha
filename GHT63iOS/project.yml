@@ -8,12 +8,18 @@ targets:
     deploymentTarget: "16.0"
     sources:
       - path: GHT63iOS
+      # 内嵌 Python 标准库（CI 里从 BeeWare 包拷出，真机 slice，见 workflow）
+      - path: python
+        type: folder
+    frameworks:
+      - path: Python.xcframework
+        embed: true
     info:
       path: GHT63iOS/Info.plist
       properties:
         CFBundleDisplayName: GHT63
-        CFBundleShortVersionString: 1.0.2
-        CFBundleVersion: "3"
+        CFBundleShortVersionString: 1.1.0
+        CFBundleVersion: "4"
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
         UISupportedInterfaceOrientations:
