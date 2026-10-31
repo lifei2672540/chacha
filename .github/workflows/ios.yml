@@ -1,0 +1,32 @@
+name: Build iOS IPA
+on:
+  push:
+    paths:
+      - 'GHT63iOS/**'
+      - '.github/workflows/ios.yml'
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        working-directory: GHT63iOS
+        run: xcodegen generate
+      - name: Archive (unsigned, for AltStore self-signing)
+        working-directory: GHT63iOS
+        run: |
+          xcodebuild -project GHT63iOS.xcodeproj -scheme GHT63iOS -sdk iphoneos -configuration Release archive -archivePath build/GHT63iOS.xcarchive CODE_SIGNING_ALLOWED=NO
+      - name: Package IPA
+        working-directory: GHT63iOS
+        run: |
+          mkdir -p Payload
+          cp -r build/GHT63iOS.xcarchive/Products/Applications/GHT63iOS.app Payload/
+          zip -r GHT63iOS-unsigned.ipa Payload
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: GHT63iOS-unsigned-ipa
+          path: GHT63iOS/GHT63iOS-unsigned.ipa
