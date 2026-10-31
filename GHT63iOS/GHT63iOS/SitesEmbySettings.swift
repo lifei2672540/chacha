@@ -263,7 +263,7 @@ struct SettingsView: View {
                 Section {
                     Text("端侧 PY 正在接入：解释器与蜘蛛桥已就绪，订阅浏览界面下一阶段来；Jar 不在 iOS 路线内。")
                         .font(.caption).foregroundColor(.secondary)
-                    Text("GHT63 iOS 1.1.2（原生版）").font(.caption).foregroundColor(.secondary)
+                    Text("GHT63 iOS 1.1.3（原生版）").font(.caption).foregroundColor(.secondary)
                     Text("内嵌 Python：\(PyRuntime.version)").font(.caption).foregroundColor(.secondary)
                     if !savedNote.isEmpty { Text(savedNote).font(.caption).foregroundColor(.green) }
                 }
@@ -320,24 +320,42 @@ struct SettingsView: View {
                     let lower = api.lowercased()
                     return lower.hasSuffix(".py") || lower.contains(".py?")
                 }
-                guard let first = py.first,
-                      let api = first["api"] as? String, !api.isEmpty else {
+                guard !py.isEmpty else {
                     throw PySpider.PyError.bridge("订阅里没找到 PY 源（共 \(sites.count) 个站）")
                 }
-                let name = (first["name"] as? String) ?? api
-                let ext = (first["ext"] as? String) ?? ""
-                let code = try await fetchText(api)
-                let json = try PySpider.run(code: code, ext: ext, method: "home", argsJson: "[]")
-                var cls = 0, lst = 0
-                if let d = json.data(using: .utf8),
-                   let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
-                    cls = (o["class"] as? [Any])?.count ?? 0
-                    lst = (o["list"] as? [Any])?.count ?? 0
+                // 阶段 2 还没有 Crypto/lxml 真轮子：跳过要它们的源，找第一个能跑的；
+                // 一个源拉取或跑 home 失败就换下一个，不直接判死刑
+                var skipped = 0
+                var lastErr = ""
+                for site in py.prefix(10) {
+                    guard let api = site["api"] as? String, !api.isEmpty else { continue }
+                    let name = (site["name"] as? String) ?? api
+                    let ext = (site["ext"] as? String) ?? ""
+                    do {
+                        let code = try await fetchText(api)
+                        if code.contains("Crypto") || code.contains("lxml") {
+                            skipped += 1
+                            continue
+                        }
+                        let json = try PySpider.run(code: code, ext: ext, method: "home", argsJson: "[]")
+                        var cls = 0, lst = 0
+                        if let d = json.data(using: .utf8),
+                           let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+                            cls = (o["class"] as? [Any])?.count ?? 0
+                            lst = (o["list"] as? [Any])?.count ?? 0
+                        }
+                        let out = "订阅 \(sites.count) 站，PY \(py.count) 个；跳过 \(skipped) 个要 Crypto/lxml 的源，首个能跑的 \(name)：home 分类 \(cls) 个、推荐 \(lst) 条"
+                        await MainActor.run { pyTestResult = out }
+                        return
+                    } catch {
+                        lastErr = "\(error)"
+                        continue
+                    }
                 }
-                let out = "订阅 \(sites.count) 站，PY \(py.count) 个；首个 PY 源 \(name)：home 分类 \(cls) 个、推荐 \(lst) 条"
-                await MainActor.run { pyTestResult = out }
+                throw PySpider.PyError.bridge("试了 \(min(10, py.count)) 个源：\(skipped) 个要 Crypto/lxml（等阶段 3），其余跑 home 失败：\(lastErr)")
             } catch {
-                let msg = String("\(error)".prefix(300))
+                let msg = "\(error)"
+                ErrorLog.append("PY 自检失败：\(msg)")
                 await MainActor.run { pyTestResult = "自检失败：\(msg)" }
             }
         }
