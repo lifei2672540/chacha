@@ -14,11 +14,10 @@ jobs:
         working-directory: GHT63iOS
         run: |
           set -e
-          TAG=$(curl -s "https://api.github.com/repos/beeware/python-apple-support/releases?per_page=100" | python3 -c "import sys,json; rs=json.load(sys.stdin); print(next(r['tag_name'] for r in rs if r['tag_name'].startswith('3.11-')))")
-          echo "BeeWare tag: $TAG"
-          ASSET=$(curl -s "https://api.github.com/repos/beeware/python-apple-support/releases/tags/$TAG" | python3 -c "import sys,json; r=json.load(sys.stdin); print(next(a['browser_download_url'] for a in r['assets'] if 'iOS' in a['name']))")
+          # 定死 3.11 最新 tag，不调 GitHub API（CI 上曾撞未登录限流导致解析失败）
+          ASSET="https://github.com/beeware/python-apple-support/releases/download/3.11-b13/Python-3.11-iOS-support.b13.tar.gz"
           echo "Asset: $ASSET"
-          curl -L -o python-ios.tar.gz "$ASSET"
+          curl -fL -o python-ios.tar.gz "$ASSET"
           mkdir -p py-support && tar xzf python-ios.tar.gz -C py-support
           echo "--- layout ---"
           find py-support -maxdepth 4 | head -60
