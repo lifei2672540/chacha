@@ -19,7 +19,15 @@ enum PyRuntime {
         }
         setenv("PYTHONHOME", home, 1)
         if let appPath = Bundle.main.path(forResource: "app", ofType: nil) {
-            setenv("PYTHONPATH", appPath, 1)
+            // 签名墙实验：扩展模块 .so 已移进 Python.framework/lib-dynload（AltStore
+            // 签名框架时一并覆盖），把该目录也放进 PYTHONPATH，让 import 找得到它们；
+            // 目录不存在（旧包）时只用 app/，行为与原来一致
+            var paths = [appPath]
+            let fwDyn = Bundle.main.bundleURL.appendingPathComponent("Frameworks/Python.framework/lib-dynload").path
+            if FileManager.default.fileExists(atPath: fwDyn) {
+                paths.append(fwDyn)
+            }
+            setenv("PYTHONPATH", paths.joined(separator: ":"), 1)
             let cert = (appPath as NSString).appendingPathComponent("certifi/cacert.pem")
             if FileManager.default.fileExists(atPath: cert) {
                 setenv("SSL_CERT_FILE", cert, 1)
