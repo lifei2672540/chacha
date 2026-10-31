@@ -206,6 +206,7 @@ struct SettingsView: View {
     @State private var embyUser = ""
     @State private var embyPw = ""
     @State private var savedNote = ""
+    @State private var pyTestResult = "还没跑过"
 
     var body: some View {
         NavigationStack {
@@ -240,10 +241,14 @@ struct SettingsView: View {
                         savedNote = "Emby 账号已保存"
                     }
                 }
+                Section("PY 自检（阶段 2：桥与纯 Python 依赖）") {
+                    Text(pyTestResult).font(.caption).foregroundColor(.secondary)
+                    Button("跑一次自检") { runPySelfTest() }
+                }
                 Section {
-                    Text("iOS 版不支持 Jar 与端侧 PY 源（系统限制：dex 与 Chaquopy 只有安卓版）。")
+                    Text("端侧 PY 正在接入：解释器与蜘蛛桥已就绪，订阅浏览界面下一阶段来；Jar 不在 iOS 路线内。")
                         .font(.caption).foregroundColor(.secondary)
-                    Text("GHT63 iOS 1.1.0（原生版）").font(.caption).foregroundColor(.secondary)
+                    Text("GHT63 iOS 1.1.1（原生版）").font(.caption).foregroundColor(.secondary)
                     Text("内嵌 Python：\(PyRuntime.version)").font(.caption).foregroundColor(.secondary)
                     if !savedNote.isEmpty { Text(savedNote).font(.caption).foregroundColor(.green) }
                 }
@@ -254,6 +259,71 @@ struct SettingsView: View {
                 embyServer = EmbyApi.server
                 embyUser = EmbyApi.username
                 embyPw = EmbyApi.password
+            }
+        }
+    }
+
+    // MARK: - PY 自检（阶段 2 验收：订阅拉取 + 首个 PY 源的 homeContent）
+    private func encodedURL(_ raw: String) -> URL? {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~:/?#[]@!$&'()*+,;=")
+        guard let s = raw.addingPercentEncoding(withAllowedCharacters: allowed) else { return nil }
+        return URL(string: s)
+    }
+
+    private func fetchText(_ raw: String) async throws -> String {
+        guard let url = encodedURL(raw) else {
+            throw PySpider.PyError.bridge("URL 编码失败：\(raw)")
+        }
+        let req = URLRequest(url: url, timeoutInterval: 30)
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw PySpider.PyError.bridge("HTTP 失败：\(raw)")
+        }
+        guard let s = String(data: data, encoding: .utf8) else {
+            throw PySpider.PyError.bridge("响应不是 UTF-8 文本")
+        }
+        return s
+    }
+
+    private func runPySelfTest() {
+        pyTestResult = "跑着呢…"
+        // TV 端同款默认订阅
+        let subURL = "http://test.lifei555.cloudns.be/影视/v1/ok海豚.json"
+        Task.detached {
+            do {
+                let text = try await fetchText(subURL)
+                guard let data = text.data(using: .utf8),
+                      let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let sites = root["sites"] as? [[String: Any]] else {
+                    throw PySpider.PyError.bridge("订阅不是预期的 sites 结构")
+                }
+                // TV 端同款筛选：type=3 且 api 以 .py 结尾（或含 .py?）
+                let py = sites.filter { site in
+                    guard (site["type"] as? Int) == 3,
+                          let api = site["api"] as? String else { return false }
+                    let lower = api.lowercased()
+                    return lower.hasSuffix(".py") || lower.contains(".py?")
+                }
+                guard let first = py.first,
+                      let api = first["api"] as? String, !api.isEmpty else {
+                    throw PySpider.PyError.bridge("订阅里没找到 PY 源（共 \(sites.count) 个站）")
+                }
+                let name = (first["name"] as? String) ?? api
+                let ext = (first["ext"] as? String) ?? ""
+                let code = try await fetchText(api)
+                let json = try PySpider.run(code: code, ext: ext, method: "home", argsJson: "[]")
+                var cls = 0, lst = 0
+                if let d = json.data(using: .utf8),
+                   let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+                    cls = (o["class"] as? [Any])?.count ?? 0
+                    lst = (o["list"] as? [Any])?.count ?? 0
+                }
+                let out = "订阅 \(sites.count) 站，PY \(py.count) 个；首个 PY 源 \(name)：home 分类 \(cls) 个、推荐 \(lst) 条"
+                await MainActor.run { pyTestResult = out }
+            } catch {
+                let msg = String("\(error)".prefix(300))
+                await MainActor.run { pyTestResult = "自检失败：\(msg)" }
             }
         }
     }
