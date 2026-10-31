@@ -11,6 +11,9 @@ targets:
       # 内嵌 Python 标准库（CI 里从 BeeWare 包拷出，真机 slice，见 workflow）
       - path: python
         type: folder
+      # 蜘蛛桥 + 纯 Python 依赖（桥代码进仓库，第三方包由 CI 拉源码包解进 app/）
+      - path: app
+        type: folder
     # 注意：XcodeGen 没有 target 级 frameworks 键，预编译框架必须走 dependencies 的 framework 项，
     # 之前 frameworks 写法被静默忽略，工程里根本没链 Python 框架（第 17 次构建的探查已证实）。
     dependencies:
@@ -20,8 +23,8 @@ targets:
       path: GHT63iOS/Info.plist
       properties:
         CFBundleDisplayName: GHT63
-        CFBundleShortVersionString: 1.1.0
-        CFBundleVersion: "4"
+        CFBundleShortVersionString: 1.1.1
+        CFBundleVersion: "5"
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
         UISupportedInterfaceOrientations:
