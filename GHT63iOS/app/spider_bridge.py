@@ -3,7 +3,6 @@
 # User code is exec'd in its own namespace; its `Spider` class is found,
 # instantiated once per (code, ext) and cached. Method arity differences
 # between spider generations are absorbed here.
-import hashlib
 import inspect
 import json
 import traceback
@@ -12,7 +11,9 @@ _cache = {}
 
 
 def _get_spider(code, ext):
-    key = hashlib.sha256((code + "\x00" + (ext or "")).encode()).hexdigest()
+    # 缓存键直接用 (脚本, 扩展) 本身：iOS 的 BeeWare 精简版 Python 里
+    # hashlib.sha256 不可用（缺 _hashlib/_sha2），绝不能在这里依赖 hashlib
+    key = (code, ext or "")
     if key in _cache:
         return _cache[key]
     ns = {"__name__": "user_spider", "__file__": "<spider>"}
