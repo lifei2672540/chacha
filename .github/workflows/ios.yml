@@ -36,6 +36,10 @@ jobs:
           mkdir -p Python.xcframework/ios-arm64/Python.framework/lib-dynload
           cp py-support/Python.xcframework/ios-arm64/lib-arm64/python3.11/lib-dynload/*.so Python.xcframework/ios-arm64/Python.framework/lib-dynload/
           rm -f python/lib/python3.11/lib-dynload/*.so
+          # 临时签名实验：AltStore 不签框架内的 .so，iOS 要求至少临时签名；
+          # CI 里用 codesign -s - 给每个 .so 做临时签名，装机后探针见分晓
+          for f in Python.xcframework/ios-arm64/Python.framework/lib-dynload/*.so; do codesign --force --sign - "$f"; done
+          codesign -dv Python.xcframework/ios-arm64/Python.framework/lib-dynload/math.cpython-311-iphoneos.so 2>&1 | head -3 || true
           echo "--- bundle inputs ---"
           ls Python.xcframework/ios-arm64/Python.framework/lib-dynload | wc -l
           ls python/lib/python3.11/lib-dynload | wc -l
