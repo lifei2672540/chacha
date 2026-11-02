@@ -41,6 +41,9 @@ final class PlayerModel: ObservableObject {
     var isEmby: Bool { currentEp.url.hasPrefix("emby:") }
     /// PY 组：pyApi 非空即走 playerContent 解析，不走 CMS 直链、不走流代理。
     var isPY: Bool { !group.pyApi.isEmpty }
+    /// Telegram 组：流地址以采集端地址开头，本身就是直连地址，不走 GHT63 流代理
+    /// （代理取不到局域网地址；TV 版 PlayerActivity.isTg 同款）。
+    var isTG: Bool { currentEp.url.hasPrefix(ApiClient.shared.tgBaseUrl) }
     private var currentLine: PlayLine? {
         group.sources.indices.contains(currentSourceIdx)
             ? group.sources[currentSourceIdx].lines.indices.contains(currentLineIdx)
@@ -200,8 +203,8 @@ final class PlayerModel: ObservableObject {
     }
 
     private func handleError() {
-        // PY 不走流代理（TV 同款），失败直接换线路
-        if !proxyTried && !isEmby && !isPY {
+        // PY/Telegram 不走流代理（TV 同款），失败直接换线路
+        if !proxyTried && !isEmby && !isPY && !isTG {
             proxyTried = true
             notice = "直连失败，改走代理"
             ErrorLog.append("播放失败走代理 \(group.name) - \(currentEp.title)")
