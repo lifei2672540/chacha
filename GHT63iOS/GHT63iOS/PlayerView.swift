@@ -15,6 +15,8 @@ final class PlayerModel: ObservableObject {
     @Published var speed: Float = 1
     @Published var sleepText: String?
     @Published var notice: String?
+    @Published var cacheProgress: Double?
+    @Published var cacheMB: Int = 0
 
     let player = AVPlayer()
     private var statusObs: NSKeyValueObservation?
@@ -28,6 +30,7 @@ final class PlayerModel: ObservableObject {
     private var started = false
     private var watchdog: Task<Void, Never>?
     private var pyTask: Task<Void, Never>?
+    private var tgTask: Task<Void, Never>?
 
     init(group: VodGroup, sourceIdx: Int, lineIdx: Int, startEpisode: Episode) {
         self.group = group
@@ -85,10 +88,19 @@ final class PlayerModel: ObservableObject {
 
     func buildPlay() {
         errorText = nil
+        cacheProgress = nil
         watchdog?.cancel()
         if isPY {
             pyTask?.cancel()
             pyTask = Task { await buildPlayPY() }
+            return
+        }
+        if isTG {
+            tgTask?.cancel()
+            tgTask = Task { [weak self] in
+                guard let self else { return }
+                await self.buildPlayTG()
+            }
             return
         }
         guard !currentEp.url.isEmpty, let url = resolveURL() else {
@@ -98,6 +110,42 @@ final class PlayerModel: ObservableObject {
         }
         ErrorLog.append("播放 \(group.name) - \(currentEp.title) 源\(currentSourceIdx) 线\(currentLineIdx) \(url.absoluteString)")
         playURL(url, headers: nil)
+    }
+
+    /// TG：先下载完再播。采集端经 Telegram 现取流又慢又不稳，AVPlayer 边下边播
+    /// 在这条路上起不来（1.2.5 日志：60 秒内连可播状态都到不了）；整文件下完放本地播就稳了。
+    /// 断点续传 + 本地缓存，二次播直接读缓存。
+    private func buildPlayTG() async {
+        guard !currentEp.url.isEmpty, let url = resolveURL() else {
+            errorText = "播放地址为空"
+            return
+        }
+        let final = TGCache.finalFile(for: url.absoluteString)
+        if FileManager.default.fileExists(atPath: final.path),
+           ((try? FileManager.default.attributesOfItem(atPath: final.path)[.size] as? Int) ?? 0) > 0 {
+            ErrorLog.append("TG读缓存 \(group.name) - \(currentEp.title)")
+            cacheProgress = nil
+            playURL(final, headers: nil)
+            return
+        }
+        cacheProgress = 0
+        cacheMB = 0
+        ErrorLog.append("TG下载开始 \(group.name) - \(currentEp.title)")
+        do {
+            let file = try await TGCache.download(url: url, progress: { [weak self] done, total in
+                self?.cacheMB = done / 1_000_000
+                self?.cacheProgress = total > 0 ? Double(done) / Double(total) : -1
+            })
+            guard !Task.isCancelled else { return }
+            cacheProgress = nil
+            ErrorLog.append("TG下载完成 \(group.name) - \(currentEp.title)")
+            playURL(file, headers: nil)
+        } catch {
+            guard !Task.isCancelled else { return }
+            cacheProgress = nil
+            errorText = "下载失败，请重试"
+            ErrorLog.append("TG下载失败 \(group.name) - \(currentEp.title)：\(error)")
+        }
     }
 
     /// PY：按当前线路 pyFlag + 集 url（播放 id）调 playerContent；parse!=0 或空地址 = 换线路。
@@ -342,12 +390,131 @@ final class PlayerModel: ObservableObject {
     func teardown() {
         watchdog?.cancel()
         pyTask?.cancel()
+        tgTask?.cancel()
         saveNow(seconds: player.currentTime().seconds)
         if let t = timeObs { player.removeTimeObserver(t) }
         if let e = endObs { NotificationCenter.default.removeObserver(e) }
         statusObs?.invalidate()
         sleepWork?.cancel()
         player.pause()
+    }
+}
+
+/// TG 流本地缓存：分片下载（2MB 一片）+ 断点续传，失败重试，完工后落盘，超 2GB 清最旧。
+/// 未完成的文件留 .part 续传，完工的文件才改名进缓存，缓存文件恒为完整文件。
+enum TGCache {
+    static let segment = 2 * 1024 * 1024
+    static let cap: Int64 = 2_000_000_000
+
+    static var dir: URL {
+        let d = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("TGCache")
+        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        return d
+    }
+
+    static func fileName(for urlString: String) -> String {
+        let raw = urlString.components(separatedBy: "/stream/").last ?? urlString
+        let kept = raw.unicodeScalars.map { CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_" ? Character($0) : "_" }
+        return String(kept.prefix(64)) + ".mp4"
+    }
+
+    static func finalFile(for urlString: String) -> URL { dir.appendingPathComponent(fileName(for: urlString)) }
+    static func partFile(for urlString: String) -> URL { dir.appendingPathComponent(fileName(for: urlString) + ".part") }
+
+    static func download(url: URL, progress: @MainActor (Int, Int) -> Void) async throws -> URL {
+        let fm = FileManager.default
+        let final = finalFile(for: url.absoluteString)
+        let part = partFile(for: url.absoluteString)
+        var done = (try? fm.attributesOfItem(atPath: part.path)[.size] as? Int) ?? 0
+        if done < 0 { done = 0 }
+        var total = -1
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = 30
+        cfg.timeoutIntervalForResource = 120
+        let session = URLSession(configuration: cfg)
+        if !fm.fileExists(atPath: part.path) { fm.createFile(atPath: part.path, contents: nil) }
+        guard let handle = FileHandle(forWritingAtPath: part.path) else {
+            throw NSError(domain: "TGCache", code: 1, userInfo: [NSLocalizedDescriptionKey: "打不开缓存文件"])
+        }
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        while total < 0 || done < total {
+            try Task.checkCancellation()
+            let end = total > 0 ? min(done + segment - 1, total - 1) : done + segment - 1
+            var req = URLRequest(url: url)
+            req.setValue("bytes=\(done)-\(end)", forHTTPHeaderField: "Range")
+            var lastError: Error?
+            var advanced = false
+            for _ in 0..<4 {
+                do {
+                    let (data, resp) = try await session.data(for: req)
+                    guard let http = resp as? HTTPURLResponse else {
+                        throw NSError(domain: "TGCache", code: 2, userInfo: [NSLocalizedDescriptionKey: "无响应"])
+                    }
+                    if data.isEmpty {
+                        throw NSError(domain: "TGCache", code: 4, userInfo: [NSLocalizedDescriptionKey: "空数据"])
+                    }
+                    if http.statusCode == 200 {
+                        // 服务器没接 Range：它给的就是从头开始的全文
+                        if done > 0 {
+                            try handle.truncate(atOffset: 0)
+                            try handle.seek(toOffset: 0)
+                            done = 0
+                        }
+                        if total < 0, let len = http.value(forHTTPHeaderField: "Content-Length"), let n = Int(len) {
+                            total = n
+                        }
+                        try handle.write(contentsOf: data)
+                        done += data.count
+                        if total < 0 { total = done }
+                        await progress(done, total)
+                        advanced = true
+                        break
+                    } else if http.statusCode == 206 {
+                        if total < 0, let cr = http.value(forHTTPHeaderField: "Content-Range"),
+                           let slash = cr.lastIndex(of: "/"), let n = Int(cr[cr.index(after: slash)...]) {
+                            total = n
+                        }
+                        try handle.write(contentsOf: data)
+                        done += data.count
+                        await progress(done, total)
+                        advanced = true
+                        break
+                    } else {
+                        throw NSError(domain: "TGCache", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode)"])
+                    }
+                } catch {
+                    if Task.isCancelled { throw error }
+                    lastError = error
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                }
+            }
+            if !advanced { throw lastError ?? NSError(domain: "TGCache", code: 3, userInfo: [NSLocalizedDescriptionKey: "下载失败"]) }
+            if total > 0, done >= total { break }
+        }
+        if fm.fileExists(atPath: final.path) { try? fm.removeItem(at: final) }
+        try fm.moveItem(at: part, to: final)
+        prune(except: final)
+        return final
+    }
+
+    static func prune(except keep: URL) {
+        let fm = FileManager.default
+        let files = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey])) ?? []
+        var total: Int64 = 0
+        var items: [(URL, Date, Int64)] = []
+        for f in files {
+            guard f != keep, !f.path.hasSuffix(".part") else { continue }
+            let v = try? f.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+            total += Int64(v?.fileSize ?? 0)
+            items.append((f, v?.contentModificationDate ?? .distantPast, Int64(v?.fileSize ?? 0)))
+        }
+        guard total > cap else { return }
+        for (f, _, size) in items.sorted(by: { $0.1 < $1.1 }) {
+            if total <= cap { break }
+            try? fm.removeItem(at: f)
+            total -= size
+        }
     }
 }
 
@@ -389,6 +556,9 @@ struct PlayerView: View {
                 Spacer()
                 VStack(spacing: 8) {
                     if let n = model.notice { Text(n).font(.caption).foregroundColor(.yellow) }
+                    if let p = model.cacheProgress {
+                        Text(p >= 0 ? "正在缓存 \(Int(p * 100))%（\(model.cacheMB)MB）" : "正在缓存 \(model.cacheMB)MB").font(.caption).foregroundColor(.yellow)
+                    }
                     if let e = model.errorText {
                         Text(e).foregroundColor(.red)
                         Button("返回") { dismiss() }
