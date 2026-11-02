@@ -141,18 +141,25 @@ final class PlayerModel: ObservableObject {
         }
         statusObs = item.observe(\.status, options: [.new]) { [weak self] it, _ in
             if it.status == .failed {
-                Task { @MainActor in self?.handleError() }
+                let err = String(describing: it.error)
+                Task { @MainActor in
+                    ErrorLog.append("播放器失败 \(self?.group.name ?? "") - \(self?.currentEp.title ?? "") err=\(err)")
+                    self?.handleError()
+                }
             } else if it.status == .readyToPlay {
                 Task { @MainActor in self?.watchdog?.cancel() }
             }
         }
         player.replaceCurrentItem(with: item)
-        // 看门狗：15 秒还不出画面就按失败处理（走代理/换线路/报错），不许静默黑屏
+        // 看门狗：还不出画面就按失败处理（走代理/换线路/报错），不许静默黑屏。
+        // TG 流要经采集端现从 Telegram 取文件（探头 + 尾部 moov 两次慢取），15 秒不够，
+        // 仅 TG 放宽到 60 秒，其余源保持 15 秒。
+        let timeoutSec: UInt64 = isTG ? 60 : 15
         watchdog = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 15_000_000_000)
+            try? await Task.sleep(nanoseconds: timeoutSec * 1_000_000_000)
             guard !Task.isCancelled else { return }
             if player.currentItem?.status != .readyToPlay {
-                ErrorLog.append("加载超时 15s \(group.name) - \(currentEp.title)")
+                ErrorLog.append("加载超时 \(timeoutSec)s \(group.name) - \(currentEp.title)")
                 handleError()
             }
         }
