@@ -168,3 +168,51 @@ struct SiteType: Identifiable {
     var name: String
     var pid: Int
 }
+
+// MARK: - Telegram 采集端（与 TV 版 TgChannel/TgVideo 同款，采集端 /api/channels、/api/feed）
+
+struct TgChannel: Identifiable, Hashable {
+    var id: String { key }
+    var key: String
+    var title: String
+    var count: Int
+}
+
+struct TgVideo: Identifiable, Hashable {
+    var id: String
+    var channel: String
+    var channelTitle: String
+    var title: String
+    var caption: String
+    var date: String
+    var duration: Double
+    var thumbUrl: String
+    var streamUrl: String
+
+    func metaLine() -> String {
+        [fmtTgDuration(duration), String(date.prefix(10))].filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    /// 相对路径按采集端地址拼绝对地址；绝对地址与空串原样返回（TV 同款）。
+    func absUrl(_ base: String, _ u: String) -> String {
+        if u.isEmpty || u.hasPrefix("http://") || u.hasPrefix("https://") { return u }
+        return base.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + u
+    }
+
+    /// 单视频成组：标题即剧名，单源单线单集，点片直进播放器（TV 同款，不走详情页）；
+    /// 进度与最近观看按流地址记（播放器本就按集地址记）。
+    func toGroup(base: String) -> VodGroup {
+        let ep = Episode(title: title, url: absUrl(base, streamUrl))
+        let src = VodSource(channelTitle: channelTitle, remarks: metaLine(), actor: "", director: "",
+                            lines: [PlayLine(lineIndex: 1, episodes: [ep], label: "")])
+        return VodGroup(name: title, pic: absUrl(base, thumbUrl), typeName: "Telegram",
+                        year: String(date.prefix(4)), content: caption, sources: [src])
+    }
+}
+
+func fmtTgDuration(_ sec: Double) -> String {
+    guard sec > 0 else { return "" }
+    let s = Int(sec)
+    if s >= 3600 { return String(format: "%d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60) }
+    return String(format: "%d:%02d", s / 60, s % 60)
+}
