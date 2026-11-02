@@ -13,6 +13,13 @@ final class ApiClient {
     }
     private var baseUrl: String { base.trimmingCharacters(in: CharacterSet(charactersIn: "/")) }
 
+    /// Telegram 采集端地址（软路由，TV 版 Prefs.tgBase 同款默认值，本机存）。
+    var tgBase: String {
+        get { UserDefaults.standard.string(forKey: "tgBase") ?? "http://192.168.31.254:8899" }
+        set { UserDefaults.standard.set(newValue, forKey: "tgBase") }
+    }
+    var tgBaseUrl: String { tgBase.trimmingCharacters(in: CharacterSet(charactersIn: "/")) }
+
     private let ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
 
     private func getJSON(_ urlString: String) async throws -> [String: Any] {
@@ -22,6 +29,14 @@ final class ApiClient {
         let (data, _) = try await URLSession.shared.data(for: req)
         let obj = try JSONSerialization.jsonObject(with: data)
         return obj as? [String: Any] ?? [:]
+    }
+
+    private func getJSONArray(_ urlString: String) async throws -> [[String: Any]] {
+        guard let url = URL(string: urlString) else { throw NSError(domain: "GHT63", code: -1, userInfo: [NSLocalizedDescriptionKey: "地址无效"]) }
+        var req = URLRequest(url: url, timeoutInterval: 60)
+        req.setValue(ua, forHTTPHeaderField: "User-Agent")
+        let (data, _) = try await URLSession.shared.data(for: req)
+        return (try JSONSerialization.jsonObject(with: data)) as? [[String: Any]] ?? []
     }
 
     private func postJSON(_ urlString: String, body: Any) async throws {
@@ -102,6 +117,37 @@ final class ApiClient {
 
     func saveFavorites(_ list: [FavItem]) async {
         try? await postJSON("\(baseUrl)/proxy.php?action=save_favorites", body: list.map { $0.toJSON() })
+    }
+
+    // MARK: Telegram 采集端（TV 版 getTgChannels/getTgFeed 同款）
+    func getTgChannels() async throws -> [TgChannel] {
+        let arr = try await getJSONArray("\(tgBaseUrl)/api/channels")
+        return arr.compactMap { o -> TgChannel? in
+            guard let k = o["key"] as? String, !k.isEmpty else { return nil }
+            return TgChannel(key: k, title: o["title"] as? String ?? k,
+                             count: o["count"] as? Int ?? 0)
+        }
+    }
+
+    func getTgFeed(channel: String, page: Int, pageSize: Int = 30) async throws -> (Int, [TgVideo]) {
+        let q = query([("channel", channel), ("page", "\(page)"), ("page_size", "\(pageSize)")])
+        let root = try await getJSON("\(tgBaseUrl)/api/feed?\(q)")
+        let total = root["total"] as? Int ?? 0
+        let items = ((root["items"] as? [[String: Any]]) ?? []).compactMap { o -> TgVideo? in
+            guard let id = o["id"] as? String, !id.isEmpty else { return nil }
+            let dur: Double
+            if let d = o["duration"] as? Double { dur = d }
+            else if let d = o["duration"] as? Int { dur = Double(d) }
+            else { dur = 0 }
+            return TgVideo(id: id, channel: o["channel"] as? String ?? "",
+                           channelTitle: o["channel_title"] as? String ?? "",
+                           title: o["title"] as? String ?? "",
+                           caption: o["caption"] as? String ?? "",
+                           date: o["date"] as? String ?? "", duration: dur,
+                           thumbUrl: o["thumb_url"] as? String ?? "",
+                           streamUrl: o["stream_url"] as? String ?? "")
+        }
+        return (total, items)
     }
 
     // MARK: 流代理（防盗链兜底，播放失败时用）
