@@ -151,6 +151,12 @@ final class PlayerModel: ObservableObject {
             }
         }
         player.replaceCurrentItem(with: item)
+        // TG：采集端取流慢，AVPlayer 默认会等缓冲够了再播，结果就是首帧出来后一直卡着
+        // （出帧后看门狗已撤，之后再无报错，只会静默卡住）。仅 TG 不等缓冲，有数据先动起来。
+        if isTG {
+            player.automaticallyWaitsToMinimizeStalling = false
+            ErrorLog.append("TG 不等缓冲起播 \(group.name) - \(currentEp.title)")
+        }
         // 看门狗：还不出画面就按失败处理（走代理/换线路/报错），不许静默黑屏。
         // TG 流要经采集端现从 Telegram 取文件（探头 + 尾部 moov 两次慢取），15 秒不够，
         // 仅 TG 放宽到 60 秒，其余源保持 15 秒。
