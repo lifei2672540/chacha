@@ -147,6 +147,20 @@ struct HomeView: View {
                     }
                     .buttonStyle(.plain)
                     .padding(.horizontal)
+                    // Telegram 入口（TV 版 1.1.32 同款：软路由采集端，频道 → 视频网格 → 直播）
+                    NavigationLink(destination: TgHomeView()) {
+                        HStack {
+                            Text("✈️ Telegram").font(.headline).foregroundColor(.white)
+                            Spacer()
+                            Text("软路由采集的短剧").font(.caption).foregroundColor(.gray)
+                            Image(systemName: "chevron.right").foregroundColor(.gray)
+                        }
+                        .padding()
+                        .background(Color.white.opacity(0.08))
+                        .cornerRadius(12)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal)
                     if !store.recents.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("最近观看").font(.title3.bold()).foregroundColor(.white).padding(.horizontal)
@@ -250,6 +264,16 @@ private struct RecentDetailLoader: View {
             }
         }
         .task {
+            // Telegram 最近：url 就是采集端流地址（以采集端地址开头），CMS 搜不到，
+            // 直接拼单集组进详情页续播（TV 版按流地址记进度同款思路）
+            if recent.url.hasPrefix(ApiClient.shared.tgBaseUrl) {
+                let ep = Episode(title: recent.epTitle, url: recent.url)
+                let line = PlayLine(lineIndex: 1, episodes: [ep], label: "")
+                let src = VodSource(sourceLabel: "Telegram", remarks: "", actor: "", director: "", lines: [line])
+                group = VodGroup(name: recent.drama, pic: recent.pic, typeName: "Telegram", year: "", content: "",
+                                 sources: [src])
+                return
+            }
             // PY 最近：url 就是蜘蛛播放 id，CMS 搜不到，直接拼单线路组进播放器解析
             if !recent.pyApi.isEmpty {
                 let ep = Episode(title: recent.epTitle, url: recent.url)
