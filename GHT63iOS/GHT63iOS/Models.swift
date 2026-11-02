@@ -203,7 +203,7 @@ struct TgVideo: Identifiable, Hashable {
     /// 进度与最近观看按流地址记（播放器本就按集地址记）。
     func toGroup(base: String) -> VodGroup {
         let ep = Episode(title: title, url: absUrl(base, streamUrl))
-        let src = VodSource(channelTitle: channelTitle, remarks: metaLine(), actor: "", director: "",
+        let src = VodSource(sourceLabel: channelTitle, remarks: metaLine(), actor: "", director: "",
                             lines: [PlayLine(lineIndex: 1, episodes: [ep], label: "")])
         return VodGroup(name: title, pic: absUrl(base, thumbUrl), typeName: "Telegram",
                         year: String(date.prefix(4)), content: caption, sources: [src])
