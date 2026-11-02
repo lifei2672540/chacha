@@ -201,6 +201,7 @@ struct EmbyView: View {
 
 struct SettingsView: View {
     @AppStorage("serverBase") private var serverBase = "http://test.lifei555.cloudns.be/点播"
+    @AppStorage("tgBase") private var tgBase = "http://192.168.31.254:8899"
     @State private var tmdbKey = ""
     @State private var embyServer = ""
     @State private var embyUser = ""
@@ -215,6 +216,12 @@ struct SettingsView: View {
                 Section("服务器（不要带 /index.html）") {
                     TextField("服务器地址", text: $serverBase)
                         .autocapitalization(.none).disableAutocorrection(true)
+                }
+                Section("Telegram 采集端（软路由，首页 Telegram 入口用它）") {
+                    TextField("采集端地址", text: $tgBase)
+                        .autocapitalization(.none).disableAutocorrection(true)
+                    Text("默认软路由 192.168.31.254:8899，改了端口或 IP 后在这里改。")
+                        .font(.caption).foregroundColor(.secondary)
                 }
                 Section("TMDB（自己的 Key，themoviedb.org 免费注册）") {
                     SecureField("TMDB v3 Key", text: $tmdbKey)
@@ -263,7 +270,7 @@ struct SettingsView: View {
                 Section {
                     Text("端侧 PY 正在接入：解释器与蜘蛛桥已就绪，订阅浏览界面下一阶段来；Jar 不在 iOS 路线内。")
                         .font(.caption).foregroundColor(.secondary)
-                    Text("GHT63 iOS 1.2.2（原生版）").font(.caption).foregroundColor(.secondary)
+                    Text("GHT63 iOS 1.2.3（原生版）").font(.caption).foregroundColor(.secondary)
                     Text("内嵌 Python：\(PyRuntime.version)").font(.caption).foregroundColor(.secondary)
                     if !savedNote.isEmpty { Text(savedNote).font(.caption).foregroundColor(.green) }
                 }
