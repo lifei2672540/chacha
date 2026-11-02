@@ -719,7 +719,10 @@ final class TGResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
                 // 读到短段 = 到文件尾（服务器按剩余字节截断），后面没有了
                 if data.count < (chunkEnd - before) { break }
                 // allData 且 total 刚学到：收尾位置就定下来
-                if end == nil, let total = await store.totalSize(), total > 0 { end = total }
+                if end == nil {
+                    let total = await store.totalSize()
+                    if total > 0 { end = total }
+                }
             }
             request.finishLoading()
         } catch {
