@@ -422,298 +422,6 @@ enum TGCache {
     static func partFile(for urlString: String) -> URL { dir.appendingPathComponent(fileName(for: urlString) + ".part") }
     static func sidecarFile(for urlString: String) -> URL { dir.appendingPathComponent(fileName(for: urlString) + ".ranges.json") }
 
-    /// TG 边下边播的字节源：播放器要哪段就从采集端取哪段（2MB 分片、失败重试），
-    /// 取回的段按偏移写进同一个 .part 文件并记区间；下完改名进缓存，1.2.6 下好的整文件直接复用。
-    /// actor 保证区间表与文件写互不交错；同段重复取只会写进相同字节，不会写坏。
-    /// final 已存在时不再写 part（整文件恒为完整文件），读优先走 final。
-    actor TGProgressiveStore {
-        let remote: URL
-        let finalURL: URL
-        let partURL: URL
-        let sidecarURL: URL
-        private var intervals: [Range<Int>] = []
-        private var total: Int = -1
-        private var onProgress: (@MainActor (Int, Int) -> Void)?
-        private let session: URLSession
-
-        init(remote: URL, onProgress: (@MainActor (Int, Int) -> Void)?) {
-            self.remote = remote
-            self.finalURL = TGCache.finalFile(for: remote.absoluteString)
-            self.partURL = TGCache.partFile(for: remote.absoluteString)
-            self.sidecarURL = TGCache.sidecarFile(for: remote.absoluteString)
-            self.onProgress = onProgress
-            let cfg = URLSessionConfiguration.default
-            cfg.timeoutIntervalForRequest = 30
-            cfg.timeoutIntervalForResource = 120
-            self.session = URLSession(configuration: cfg)
-            let fm = FileManager.default
-            if fm.fileExists(atPath: finalURL.path) {
-                // 整文件已在，残留的 .part 与区间表一律作废
-                try? fm.removeItem(at: partURL)
-                try? fm.removeItem(at: sidecarURL)
-            } else if let data = try? Data(contentsOf: sidecarURL),
-                      let pairs = try? JSONDecoder().decode([[Int]].self, from: data) {
-                intervals = pairs.compactMap { $0.count == 2 && $0[0] < $0[1] ? $0[0]..<$0[1] : nil }.sorted { $0.lowerBound < $1.lowerBound }
-            } else if let size = (try? fm.attributesOfItem(atPath: partURL.path)[.size] as? Int), size > 0 {
-                // 无区间表：1.2.6 的 .part 是从头顺序下的前缀
-                intervals = [0..<size]
-            }
-        }
-
-        func totalSize() -> Int { total }
-
-        func downloadedBytes() -> Int { intervals.reduce(0) { $0 + $1.count } }
-
-        /// 确保 range 全在缓存里，然后从文件读出来。缺失的洞按 2MB 切分补齐；
-        /// 每补一段失败重试 4 次，仍失败则抛错（上层按播放失败处理）。
-        /// range 超出文件尾时截到 total 内（超出的部分本就不存在）；完全在尾外则抛 416。
-        func bytes(for range: Range<Int>) async throws -> Data {
-            var effective = range
-            if total > 0 { effective = range.lowerBound..<min(range.upperBound, total) }
-            guard !effective.isEmpty else {
-                throw NSError(domain: "TGCache", code: 416, userInfo: [NSLocalizedDescriptionKey: "超出文件尾"])
-            }
-            while !isCovered(effective) {
-                try Task.checkCancellation()
-                guard let hole = firstMissing(in: effective) else { break }
-                let segEnd = min(hole.lowerBound + TGCache.segment, hole.upperBound)
-                try await fetchSegment(hole.lowerBound..<segEnd)
-                // 学到 total 后，把 effective 截到 total 内（超出的部分不存在）
-                if total > 0, effective.upperBound > total {
-                    effective = effective.lowerBound..<total
-                    guard !effective.isEmpty else {
-                        throw NSError(domain: "TGCache", code: 416, userInfo: [NSLocalizedDescriptionKey: "超出文件尾"])
-                    }
-                }
-            }
-            return try read(effective)
-        }
-
-        private func isCovered(_ range: Range<Int>) -> Bool {
-            var cur = range.lowerBound
-            for iv in intervals {
-                if iv.lowerBound > cur { return false }
-                if iv.upperBound > cur { cur = iv.upperBound }
-                if cur >= range.upperBound { return true }
-            }
-            return cur >= range.upperBound
-        }
-
-        private func firstMissing(in range: Range<Int>) -> Range<Int>? {
-            var cur = range.lowerBound
-            for iv in intervals {
-                if iv.lowerBound > cur { return cur..<min(iv.lowerBound, range.upperBound) }
-                if iv.upperBound > cur { cur = iv.upperBound }
-                if cur >= range.upperBound { return nil }
-            }
-            return cur < range.upperBound ? cur..<range.upperBound : nil
-        }
-
-        private func fetchSegment(_ seg: Range<Int>) async throws {
-            var lastError: Error?
-            for _ in 0..<4 {
-                try Task.checkCancellation()
-                var req = URLRequest(url: remote)
-                req.setValue("bytes=\(seg.lowerBound)-\(seg.upperBound - 1)", forHTTPHeaderField: "Range")
-                do {
-                    let (data, resp) = try await session.data(for: req)
-                    guard let http = resp as? HTTPURLResponse else {
-                        throw NSError(domain: "TGCache", code: 2, userInfo: [NSLocalizedDescriptionKey: "无响应"])
-                    }
-                    if data.isEmpty {
-                        throw NSError(domain: "TGCache", code: 4, userInfo: [NSLocalizedDescriptionKey: "空数据"])
-                    }
-                    if http.statusCode == 206 {
-                        if total < 0, let cr = http.value(forHTTPHeaderField: "Content-Range"),
-                           let slash = cr.lastIndex(of: "/"), let n = Int(cr[cr.index(after: slash)...]) {
-                            total = n
-                        }
-                        try write(data, at: seg.lowerBound)
-                        addInterval(seg.lowerBound..<(seg.lowerBound + data.count))
-                        await onProgress?(downloadedBytes(), total)
-                        return
-                    } else if http.statusCode == 200, seg.lowerBound == 0 {
-                        // 服务器没接 Range：它给的就是从头开始的全文
-                        if total < 0, let len = http.value(forHTTPHeaderField: "Content-Length"), let n = Int(len) {
-                            total = n
-                        } else if total < 0 {
-                            total = data.count
-                        }
-                        try write(data, at: 0)
-                        addInterval(0..<data.count)
-                        await onProgress?(downloadedBytes(), total)
-                        return
-                    } else {
-                        throw NSError(domain: "TGCache", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode)"])
-                    }
-                } catch {
-                    if Task.isCancelled { throw error }
-                    lastError = error
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
-                }
-            }
-            throw lastError ?? NSError(domain: "TGCache", code: 3, userInfo: [NSLocalizedDescriptionKey: "下载失败"])
-        }
-
-        private func write(_ data: Data, at offset: Int) throws {
-            let fm = FileManager.default
-            // 整文件已在：这段必然已覆盖，跳过写（防并发取段在落盘后重建出残缺 part）
-            if fm.fileExists(atPath: finalURL.path) { return }
-            if !fm.fileExists(atPath: partURL.path) { fm.createFile(atPath: partURL.path, contents: nil) }
-            guard let handle = FileHandle(forWritingAtPath: partURL.path) else {
-                throw NSError(domain: "TGCache", code: 1, userInfo: [NSLocalizedDescriptionKey: "打不开缓存文件"])
-            }
-            defer { try? handle.close() }
-            try handle.seek(toOffset: UInt64(offset))
-            try handle.write(contentsOf: data)
-        }
-
-        private func addInterval(_ iv: Range<Int>) {
-            intervals.append(iv)
-            intervals.sort { $0.lowerBound < $1.lowerBound }
-            var merged: [Range<Int>] = []
-            for r in intervals {
-                if let last = merged.last, r.lowerBound <= last.upperBound {
-                    merged[merged.count - 1] = last.lowerBound..<max(last.upperBound, r.upperBound)
-                } else {
-                    merged.append(r)
-                }
-            }
-            intervals = merged
-            let pairs = intervals.map { [$0.lowerBound, $0.upperBound] }
-            if let data = try? JSONEncoder().encode(pairs) { try? data.write(to: sidecarURL) }
-            // 刚好下完：落盘进缓存（已打开的文件句柄不受改名影响，后续读自动走整文件）
-            if total > 0, intervals.count == 1, intervals[0].lowerBound == 0, intervals[0].upperBound >= total {
-                let fm = FileManager.default
-                if fm.fileExists(atPath: finalURL.path) { try? fm.removeItem(at: finalURL) }
-                try? fm.moveItem(at: partURL, to: finalURL)
-                try? fm.removeItem(at: sidecarURL)
-                TGCache.prune(except: finalURL)
-            }
-        }
-
-        private func read(_ range: Range<Int>) throws -> Data {
-            // 整文件优先（完整）；在播的走 part（已打开的句柄不受落盘改名影响）
-            let fm = FileManager.default
-            let path = fm.fileExists(atPath: finalURL.path) ? finalURL : partURL
-            guard let handle = FileHandle(forReadingAtPath: path.path) else {
-                throw NSError(domain: "TGCache", code: 5, userInfo: [NSLocalizedDescriptionKey: "打不开缓存文件"])
-            }
-            defer { try? handle.close() }
-            try handle.seek(toOffset: UInt64(range.lowerBound))
-            guard let data = try handle.read(upToCount: range.count), data.count == range.count else {
-                throw NSError(domain: "TGCache", code: 6, userInfo: [NSLocalizedDescriptionKey: "缓存不完整"])
-            }
-            return data
-        }
-    }
-
-    /// TG 边下边播的资源中转：AVPlayer 的每个字节请求都经这里，
-    /// 从 TGProgressiveStore 取段（缺失就现取），网卡了只让请求挂着等，不直接失败。
-    final class TGResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
-        static let queue = DispatchQueue(label: "tgloader")
-        private let store: TGProgressiveStore
-        private var pending: [ObjectIdentifier: Task<Void, Never>] = [:]
-        private let lock = NSLock()
-
-        init(remote: URL, onProgress: (@MainActor (Int, Int) -> Void)?) {
-            self.store = TGProgressiveStore(remote: remote, onProgress: onProgress)
-        }
-
-        func cancelAll() {
-            lock.lock()
-            let tasks = Array(pending.values)
-            pending.removeAll()
-            lock.unlock()
-            tasks.forEach { $0.cancel() }
-        }
-
-        func resourceLoader(_ resourceLoader: AVAssetResourceLoader, shouldWaitForLoadingOfRequestedResource loadingRequest: AVAssetResourceLoadingRequest) -> Bool {
-            let task = Task { [weak self] in
-                await self?.serve(loadingRequest)
-                self?.remove(loadingRequest)
-            }
-            lock.lock()
-            pending[ObjectIdentifier(loadingRequest)] = task
-            lock.unlock()
-            return true
-        }
-
-        func resourceLoader(_ resourceLoader: AVAssetResourceLoader, didCancel loadingRequest: AVAssetResourceLoadingRequest) {
-            lock.lock()
-            let task = pending.removeValue(forKey: ObjectIdentifier(loadingRequest))
-            lock.unlock()
-            task?.cancel()
-        }
-
-        private func remove(_ request: AVAssetResourceLoadingRequest) {
-            lock.lock()
-            pending.removeValue(forKey: ObjectIdentifier(request))
-            lock.unlock()
-        }
-
-        private func serve(_ request: AVAssetResourceLoadingRequest) async {
-            // 无数据请求：只填信息（total 已知就直接填，未知取 1 字节学 total）
-            guard let dr = request.dataRequest else {
-                do {
-                    var total = await store.totalSize()
-                    if total < 0 {
-                        _ = try await store.bytes(for: 0..<1)
-                        total = await store.totalSize()
-                    }
-                    if let info = request.contentInformationRequest, total > 0 {
-                        info.contentType = "public.mpeg-4"
-                        info.contentLength = Int64(total)
-                        info.isByteRangeAccessSupported = true
-                    }
-                    request.finishLoading()
-                } catch {
-                    if !Task.isCancelled { request.finishLoading(with: error) }
-                }
-                return
-            }
-            let off = Int(dr.requestedOffset)
-            var end: Int? = dr.requestsAllDataToEndOfResource ? nil : off + Int(dr.requestedLength)
-            var cur = off
-            var filledInfo = false
-            do {
-                while true {
-                    if let e = end, cur >= e { break }
-                    let chunkEnd = end.map { min(cur + TGCache.segment, $0) } ?? (cur + TGCache.segment)
-                    let data = try await store.bytes(for: cur..<chunkEnd)
-                    if data.isEmpty {
-                        throw NSError(domain: "TGCache", code: 4, userInfo: [NSLocalizedDescriptionKey: "空数据"])
-                    }
-                    if !filledInfo, let info = request.contentInformationRequest {
-                        let total = await store.totalSize()
-                        if total > 0 {
-                            info.contentType = "public.mpeg-4"
-                            info.contentLength = Int64(total)
-                            info.isByteRangeAccessSupported = true
-                            filledInfo = true
-                        }
-                    }
-                    dr.respond(with: data)
-                    let before = cur
-                    cur += data.count
-                    // 读到短段 = 到文件尾（服务器按剩余字节截断），后面没有了
-                    if data.count < (chunkEnd - before) { break }
-                    // allData 且 total 刚学到：收尾位置就定下来
-                    if end == nil, let total = await store.totalSize(), total > 0 { end = total }
-                }
-                request.finishLoading()
-            } catch {
-                if Task.isCancelled { return }
-                // 416 且前面已给过数据 = 到文件尾，正常结束；否则按失败处理
-                if (error as NSError).code == 416, cur > off {
-                    request.finishLoading()
-                } else {
-                    request.finishLoading(with: error)
-                }
-            }
-        }
-    }
-
     static func prune(except keep: URL) {
         let fm = FileManager.default
         let files = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey])) ?? []
@@ -730,6 +438,298 @@ enum TGCache {
             if total <= cap { break }
             try? fm.removeItem(at: f)
             total -= size
+        }
+    }
+}
+
+/// TG 边下边播的字节源：播放器要哪段就从采集端取哪段（2MB 分片、失败重试），
+/// 取回的段按偏移写进同一个 .part 文件并记区间；下完改名进缓存，1.2.6 下好的整文件直接复用。
+/// actor 保证区间表与文件写互不交错；同段重复取只会写进相同字节，不会写坏。
+/// final 已存在时不再写 part（整文件恒为完整文件），读优先走 final。
+actor TGProgressiveStore {
+    let remote: URL
+    let finalURL: URL
+    let partURL: URL
+    let sidecarURL: URL
+    private var intervals: [Range<Int>] = []
+    private var total: Int = -1
+    private var onProgress: (@MainActor (Int, Int) -> Void)?
+    private let session: URLSession
+
+    init(remote: URL, onProgress: (@MainActor (Int, Int) -> Void)?) {
+        self.remote = remote
+        self.finalURL = TGCache.finalFile(for: remote.absoluteString)
+        self.partURL = TGCache.partFile(for: remote.absoluteString)
+        self.sidecarURL = TGCache.sidecarFile(for: remote.absoluteString)
+        self.onProgress = onProgress
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = 30
+        cfg.timeoutIntervalForResource = 120
+        self.session = URLSession(configuration: cfg)
+        let fm = FileManager.default
+        if fm.fileExists(atPath: finalURL.path) {
+            // 整文件已在，残留的 .part 与区间表一律作废
+            try? fm.removeItem(at: partURL)
+            try? fm.removeItem(at: sidecarURL)
+        } else if let data = try? Data(contentsOf: sidecarURL),
+                  let pairs = try? JSONDecoder().decode([[Int]].self, from: data) {
+            intervals = pairs.compactMap { $0.count == 2 && $0[0] < $0[1] ? $0[0]..<$0[1] : nil }.sorted { $0.lowerBound < $1.lowerBound }
+        } else if let size = (try? fm.attributesOfItem(atPath: partURL.path)[.size] as? Int), size > 0 {
+            // 无区间表：1.2.6 的 .part 是从头顺序下的前缀
+            intervals = [0..<size]
+        }
+    }
+
+    func totalSize() -> Int { total }
+
+    func downloadedBytes() -> Int { intervals.reduce(0) { $0 + $1.count } }
+
+    /// 确保 range 全在缓存里，然后从文件读出来。缺失的洞按 2MB 切分补齐；
+    /// 每补一段失败重试 4 次，仍失败则抛错（上层按播放失败处理）。
+    /// range 超出文件尾时截到 total 内（超出的部分本就不存在）；完全在尾外则抛 416。
+    func bytes(for range: Range<Int>) async throws -> Data {
+        var effective = range
+        if total > 0 { effective = range.lowerBound..<min(range.upperBound, total) }
+        guard !effective.isEmpty else {
+            throw NSError(domain: "TGCache", code: 416, userInfo: [NSLocalizedDescriptionKey: "超出文件尾"])
+        }
+        while !isCovered(effective) {
+            try Task.checkCancellation()
+            guard let hole = firstMissing(in: effective) else { break }
+            let segEnd = min(hole.lowerBound + TGCache.segment, hole.upperBound)
+            try await fetchSegment(hole.lowerBound..<segEnd)
+            // 学到 total 后，把 effective 截到 total 内（超出的部分不存在）
+            if total > 0, effective.upperBound > total {
+                effective = effective.lowerBound..<total
+                guard !effective.isEmpty else {
+                    throw NSError(domain: "TGCache", code: 416, userInfo: [NSLocalizedDescriptionKey: "超出文件尾"])
+                }
+            }
+        }
+        return try read(effective)
+    }
+
+    private func isCovered(_ range: Range<Int>) -> Bool {
+        var cur = range.lowerBound
+        for iv in intervals {
+            if iv.lowerBound > cur { return false }
+            if iv.upperBound > cur { cur = iv.upperBound }
+            if cur >= range.upperBound { return true }
+        }
+        return cur >= range.upperBound
+    }
+
+    private func firstMissing(in range: Range<Int>) -> Range<Int>? {
+        var cur = range.lowerBound
+        for iv in intervals {
+            if iv.lowerBound > cur { return cur..<min(iv.lowerBound, range.upperBound) }
+            if iv.upperBound > cur { cur = iv.upperBound }
+            if cur >= range.upperBound { return nil }
+        }
+        return cur < range.upperBound ? cur..<range.upperBound : nil
+    }
+
+    private func fetchSegment(_ seg: Range<Int>) async throws {
+        var lastError: Error?
+        for _ in 0..<4 {
+            try Task.checkCancellation()
+            var req = URLRequest(url: remote)
+            req.setValue("bytes=\(seg.lowerBound)-\(seg.upperBound - 1)", forHTTPHeaderField: "Range")
+            do {
+                let (data, resp) = try await session.data(for: req)
+                guard let http = resp as? HTTPURLResponse else {
+                    throw NSError(domain: "TGCache", code: 2, userInfo: [NSLocalizedDescriptionKey: "无响应"])
+                }
+                if data.isEmpty {
+                    throw NSError(domain: "TGCache", code: 4, userInfo: [NSLocalizedDescriptionKey: "空数据"])
+                }
+                if http.statusCode == 206 {
+                    if total < 0, let cr = http.value(forHTTPHeaderField: "Content-Range"),
+                       let slash = cr.lastIndex(of: "/"), let n = Int(cr[cr.index(after: slash)...]) {
+                        total = n
+                    }
+                    try write(data, at: seg.lowerBound)
+                    addInterval(seg.lowerBound..<(seg.lowerBound + data.count))
+                    await onProgress?(downloadedBytes(), total)
+                    return
+                } else if http.statusCode == 200, seg.lowerBound == 0 {
+                    // 服务器没接 Range：它给的就是从头开始的全文
+                    if total < 0, let len = http.value(forHTTPHeaderField: "Content-Length"), let n = Int(len) {
+                        total = n
+                    } else if total < 0 {
+                        total = data.count
+                    }
+                    try write(data, at: 0)
+                    addInterval(0..<data.count)
+                    await onProgress?(downloadedBytes(), total)
+                    return
+                } else {
+                    throw NSError(domain: "TGCache", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode)"])
+                }
+            } catch {
+                if Task.isCancelled { throw error }
+                lastError = error
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+        }
+        throw lastError ?? NSError(domain: "TGCache", code: 3, userInfo: [NSLocalizedDescriptionKey: "下载失败"])
+    }
+
+    private func write(_ data: Data, at offset: Int) throws {
+        let fm = FileManager.default
+        // 整文件已在：这段必然已覆盖，跳过写（防并发取段在落盘后重建出残缺 part）
+        if fm.fileExists(atPath: finalURL.path) { return }
+        if !fm.fileExists(atPath: partURL.path) { fm.createFile(atPath: partURL.path, contents: nil) }
+        guard let handle = FileHandle(forWritingAtPath: partURL.path) else {
+            throw NSError(domain: "TGCache", code: 1, userInfo: [NSLocalizedDescriptionKey: "打不开缓存文件"])
+        }
+        defer { try? handle.close() }
+        try handle.seek(toOffset: UInt64(offset))
+        try handle.write(contentsOf: data)
+    }
+
+    private func addInterval(_ iv: Range<Int>) {
+        intervals.append(iv)
+        intervals.sort { $0.lowerBound < $1.lowerBound }
+        var merged: [Range<Int>] = []
+        for r in intervals {
+            if let last = merged.last, r.lowerBound <= last.upperBound {
+                merged[merged.count - 1] = last.lowerBound..<max(last.upperBound, r.upperBound)
+            } else {
+                merged.append(r)
+            }
+        }
+        intervals = merged
+        let pairs = intervals.map { [$0.lowerBound, $0.upperBound] }
+        if let data = try? JSONEncoder().encode(pairs) { try? data.write(to: sidecarURL) }
+        // 刚好下完：落盘进缓存（已打开的文件句柄不受改名影响，后续读自动走整文件）
+        if total > 0, intervals.count == 1, intervals[0].lowerBound == 0, intervals[0].upperBound >= total {
+            let fm = FileManager.default
+            if fm.fileExists(atPath: finalURL.path) { try? fm.removeItem(at: finalURL) }
+            try? fm.moveItem(at: partURL, to: finalURL)
+            try? fm.removeItem(at: sidecarURL)
+            TGCache.prune(except: finalURL)
+        }
+    }
+
+    private func read(_ range: Range<Int>) throws -> Data {
+        // 整文件优先（完整）；在播的走 part（已打开的句柄不受落盘改名影响）
+        let fm = FileManager.default
+        let path = fm.fileExists(atPath: finalURL.path) ? finalURL : partURL
+        guard let handle = FileHandle(forReadingAtPath: path.path) else {
+            throw NSError(domain: "TGCache", code: 5, userInfo: [NSLocalizedDescriptionKey: "打不开缓存文件"])
+        }
+        defer { try? handle.close() }
+        try handle.seek(toOffset: UInt64(range.lowerBound))
+        guard let data = try handle.read(upToCount: range.count), data.count == range.count else {
+            throw NSError(domain: "TGCache", code: 6, userInfo: [NSLocalizedDescriptionKey: "缓存不完整"])
+        }
+        return data
+    }
+}
+
+/// TG 边下边播的资源中转：AVPlayer 的每个字节请求都经这里，
+/// 从 TGProgressiveStore 取段（缺失就现取），网卡了只让请求挂着等，不直接失败。
+final class TGResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
+    static let queue = DispatchQueue(label: "tgloader")
+    private let store: TGProgressiveStore
+    private var pending: [ObjectIdentifier: Task<Void, Never>] = [:]
+    private let lock = NSLock()
+
+    init(remote: URL, onProgress: (@MainActor (Int, Int) -> Void)?) {
+        self.store = TGProgressiveStore(remote: remote, onProgress: onProgress)
+    }
+
+    func cancelAll() {
+        lock.lock()
+        let tasks = Array(pending.values)
+        pending.removeAll()
+        lock.unlock()
+        tasks.forEach { $0.cancel() }
+    }
+
+    func resourceLoader(_ resourceLoader: AVAssetResourceLoader, shouldWaitForLoadingOfRequestedResource loadingRequest: AVAssetResourceLoadingRequest) -> Bool {
+        let task = Task { [weak self] in
+            await self?.serve(loadingRequest)
+            self?.remove(loadingRequest)
+        }
+        lock.lock()
+        pending[ObjectIdentifier(loadingRequest)] = task
+        lock.unlock()
+        return true
+    }
+
+    func resourceLoader(_ resourceLoader: AVAssetResourceLoader, didCancel loadingRequest: AVAssetResourceLoadingRequest) {
+        lock.lock()
+        let task = pending.removeValue(forKey: ObjectIdentifier(loadingRequest))
+        lock.unlock()
+        task?.cancel()
+    }
+
+    private func remove(_ request: AVAssetResourceLoadingRequest) {
+        lock.lock()
+        pending.removeValue(forKey: ObjectIdentifier(request))
+        lock.unlock()
+    }
+
+    private func serve(_ request: AVAssetResourceLoadingRequest) async {
+        // 无数据请求：只填信息（total 已知就直接填，未知取 1 字节学 total）
+        guard let dr = request.dataRequest else {
+            do {
+                var total = await store.totalSize()
+                if total < 0 {
+                    _ = try await store.bytes(for: 0..<1)
+                    total = await store.totalSize()
+                }
+                if let info = request.contentInformationRequest, total > 0 {
+                    info.contentType = "public.mpeg-4"
+                    info.contentLength = Int64(total)
+                    info.isByteRangeAccessSupported = true
+                }
+                request.finishLoading()
+            } catch {
+                if !Task.isCancelled { request.finishLoading(with: error) }
+            }
+            return
+        }
+        let off = Int(dr.requestedOffset)
+        var end: Int? = dr.requestsAllDataToEndOfResource ? nil : off + Int(dr.requestedLength)
+        var cur = off
+        var filledInfo = false
+        do {
+            while true {
+                if let e = end, cur >= e { break }
+                let chunkEnd = end.map { min(cur + TGCache.segment, $0) } ?? (cur + TGCache.segment)
+                let data = try await store.bytes(for: cur..<chunkEnd)
+                if data.isEmpty {
+                    throw NSError(domain: "TGCache", code: 4, userInfo: [NSLocalizedDescriptionKey: "空数据"])
+                }
+                if !filledInfo, let info = request.contentInformationRequest {
+                    let total = await store.totalSize()
+                    if total > 0 {
+                        info.contentType = "public.mpeg-4"
+                        info.contentLength = Int64(total)
+                        info.isByteRangeAccessSupported = true
+                        filledInfo = true
+                    }
+                }
+                dr.respond(with: data)
+                let before = cur
+                cur += data.count
+                // 读到短段 = 到文件尾（服务器按剩余字节截断），后面没有了
+                if data.count < (chunkEnd - before) { break }
+                // allData 且 total 刚学到：收尾位置就定下来
+                if end == nil, let total = await store.totalSize(), total > 0 { end = total }
+            }
+            request.finishLoading()
+        } catch {
+            if Task.isCancelled { return }
+            // 416 且前面已给过数据 = 到文件尾，正常结束；否则按失败处理
+            if (error as NSError).code == 416, cur > off {
+                request.finishLoading()
+            } else {
+                request.finishLoading(with: error)
+            }
         }
     }
 }
