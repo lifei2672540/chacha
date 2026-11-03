@@ -42,7 +42,7 @@ final class AudioPlayerModel: NSObject, ObservableObject, AVAudioPlayerDelegate 
     if p.isPlaying {
       p.updateMeters()
       let avg = p.averagePower(forChannel: 0)
-      level = min(1.0, max(0.0, (avg + 60.0) / 60.0))
+      level = min(1.0, max(0.0, (Double(avg) + 60.0) / 60.0))
       updateNowPlaying()
     } else {
       level *= 0.9

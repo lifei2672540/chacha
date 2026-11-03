@@ -67,7 +67,7 @@ struct PlayerView: View {
               get: { Double(player.volume) },
               set: { player.setVolume(Float($0)) }
             ), in: 0...1)
-            .tint(.magenta)
+            .tint(.pink)
             Image(systemName: "speaker.wave.3.fill").font(.system(size: 12))
           }
           .foregroundColor(.white.opacity(0.7))

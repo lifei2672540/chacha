@@ -14,7 +14,7 @@ struct LibraryView: View {
           } label: {
             HStack {
               Image(systemName: track.isDemo ? "sparkles" : "music.note")
-                .foregroundColor(track.isDemo ? .magenta : .cyan)
+                .foregroundColor(track.isDemo ? .pink : .cyan)
               VStack(alignment: .leading, spacing: 2) {
                 Text(track.title).lineLimit(1)
                 Text(track.artist).font(.caption).foregroundColor(.secondary)

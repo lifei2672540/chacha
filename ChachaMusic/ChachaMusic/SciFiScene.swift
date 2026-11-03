@@ -43,7 +43,7 @@ struct SciFiView: UIViewRepresentable {
 
     let point = SCNNode()
     point.light = SCNLight()
-    point.light?.type = .point
+    point.light?.type = .omni
     point.light?.color = UIColor.cyan
     point.position = SCNVector3(4, 4, 6)
     scene.rootNode.addChildNode(point)
