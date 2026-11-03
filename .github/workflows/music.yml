@@ -1,0 +1,37 @@
+name: Build ChachaMusic IPA
+on:
+  push:
+    paths:
+      - 'ChachaMusic/**'
+      - '.github/workflows/music.yml'
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        working-directory: ChachaMusic
+        run: xcodegen generate
+      - name: Build archive (unsigned)
+        working-directory: ChachaMusic
+        run: |
+          xcodebuild archive \
+            -project ChachaMusic.xcodeproj \
+            -scheme ChachaMusic \
+            -sdk iphoneos \
+            -archivePath build/ChachaMusic.xcarchive \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Package IPA
+        working-directory: ChachaMusic
+        run: |
+          mkdir -p Payload
+          cp -r build/ChachaMusic.xcarchive/Products/Applications/ChachaMusic.app Payload/
+          zip -r ChachaMusic-unsigned.ipa Payload
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChachaMusic-unsigned-ipa
+          path: ChachaMusic/ChachaMusic-unsigned.ipa
