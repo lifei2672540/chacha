@@ -1,4 +1,6 @@
 name: ChachaMusic
+options:
+  bundleIdPrefix: com.chacha
 targets:
   ChachaMusic:
     type: application
@@ -9,7 +11,7 @@ targets:
     info:
       properties:
         CFBundleDisplayName: 茶茶听音乐
-        CFBundleShortVersionString: 1.0.0
+        CFBundleShortVersionString: "1.0.0"
         CFBundleVersion: "1"
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -21,5 +23,5 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.chacha.music
-        SWIFT_VERSION: 5.0
+        SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1"
