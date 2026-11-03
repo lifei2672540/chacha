@@ -23,7 +23,7 @@ struct LibraryView: View {
               if player.currentTrack?.id == track.id {
                 Image(systemName: "waveform").foregroundColor(.cyan)
               }
-              Text(fmt(track.duration)).font(.caption.monospaced()).foregroundColor(.secondary)
+              Text(fmt(track.duration)).font(.system(.caption, design: .monospaced)).foregroundColor(.secondary)
             }
           }
           .listRowBackground(Color.white.opacity(0.04))
