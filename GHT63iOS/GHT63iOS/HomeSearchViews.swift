@@ -120,7 +120,7 @@ struct HomeView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     // 顶栏品牌行（不再用系统大标题）+ 横幅大图（TV 横幅首页同款）
                     HStack(alignment: .bottom, spacing: 8) {
-                        Text("GHT63").font(.title.bold()).foregroundColor(.white)
+                        Text("茶茶点播").font(.title.bold()).foregroundColor(.white)
                         Text("多源聚合点播").font(.caption).foregroundColor(.gray)
                         Spacer()
                         Button("刷新") { Task { await load() } }
