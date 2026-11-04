@@ -9,18 +9,18 @@ struct PlayerLayerView: UIViewRepresentable {
     func updateUIView(_ uiView: PlayerUIView, context: Context) { uiView.setPlayer(player) }
 
     final class PlayerUIView: UIView {
-        private let layer = AVPlayerLayer()
+        private let playerLayer = AVPlayerLayer()
         override init(frame: CGRect) {
             super.init(frame: frame)
-            layer.videoGravity = .resizeAspectFill
-            self.layer.addSublayer(layer)
+            playerLayer.videoGravity = .resizeAspectFill
+            self.layer.addSublayer(playerLayer)
         }
         required init?(coder: NSCoder) { fatalError() }
         override func layoutSubviews() {
             super.layoutSubviews()
-            layer.frame = bounds
+            playerLayer.frame = bounds
         }
-        func setPlayer(_ p: AVPlayer?) { layer.player = p }
+        func setPlayer(_ p: AVPlayer?) { playerLayer.player = p }
     }
 }
 
