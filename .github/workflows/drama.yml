@@ -1,0 +1,96 @@
+name: Build Drama IPA
+on:
+  push:
+    paths:
+      - 'ChachaDrama/**'
+      - '.github/workflows/drama.yml'
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch Python (BeeWare 3.11, iOS)
+        working-directory: ChachaDrama
+        run: |
+          set -e
+          # 定死 3.11 最新 tag，不调 GitHub API（CI 上曾撞未登录限流导致解析失败）
+          ASSET="https://github.com/beeware/python-apple-support/releases/download/3.11-b13/Python-3.11-iOS-support.b13.tar.gz"
+          echo "Asset: $ASSET"
+          curl -fL -o python-ios.tar.gz "$ASSET"
+          mkdir -p py-support && tar xzf python-ios.tar.gz -C py-support
+          echo "--- layout ---"
+          find py-support -maxdepth 4 | head -60
+          PYLIB=$(find py-support -type d -name "python3.11" | grep -v simulator | head -1)
+          if [ -z "$PYLIB" ]; then PYLIB=$(find py-support -type d -name "python3.11" | head -1); fi
+          echo "stdlib at: $PYLIB"
+          test -n "$PYLIB"
+          mkdir -p python/lib
+          cp -R "$PYLIB" python/lib/
+          # 扩展模块 .so 不在根 lib 里，在真机 slice 的 lib-arm64 下（含 _ssl），必须一起拷
+          cp -R py-support/Python.xcframework/ios-arm64/lib-arm64/python3.11/lib-dynload python/lib/python3.11/
+          cp -R py-support/Python.xcframework ./Python.xcframework
+          # 签名墙实验：放 Resources/python 下的 .so AltStore 不签，iOS 拒绝加载
+          # （真机 dlopen 报错 code signature）；改放进 Python.framework 内，让 AltStore
+          # 签名框架时一并覆盖；资源目录下只留空壳，避免未签名的副本被先找到
+          mkdir -p Python.xcframework/ios-arm64/Python.framework/lib-dynload
+          cp py-support/Python.xcframework/ios-arm64/lib-arm64/python3.11/lib-dynload/*.so Python.xcframework/ios-arm64/Python.framework/lib-dynload/
+          rm -f python/lib/python3.11/lib-dynload/*.so
+          # 临时签名实验：AltStore 不签框架内的 .so，iOS 要求至少临时签名；
+          # CI 里用 codesign -s - 给每个 .so 做临时签名，装机后探针见分晓
+          for f in Python.xcframework/ios-arm64/Python.framework/lib-dynload/*.so; do codesign --force --sign - "$f"; done
+          codesign -dv Python.xcframework/ios-arm64/Python.framework/lib-dynload/math.cpython-311-iphoneos.so 2>&1 | head -3 || true
+          echo "--- bundle inputs ---"
+          ls Python.xcframework/ios-arm64/Python.framework/lib-dynload | wc -l
+          ls python/lib/python3.11/lib-dynload | wc -l
+          du -sh python Python.xcframework
+      - name: Vendor pure Python deps (stage 2)
+        working-directory: ChachaDrama
+        run: |
+          set -e
+          rm -rf py-vend && mkdir -p py-vend
+          python3 -m pip download requests==2.34.2 urllib3==2.8.0 charset_normalizer==3.5.2 idna==3.20 certifi==2026.10.23 --no-deps --no-binary :all: -d py-vend/sdists -q
+          mkdir -p py-vend/x
+          for f in py-vend/sdists/*.tar.gz; do tar xzf "$f" -C py-vend/x; done
+          cp -r py-vend/x/requests-2.34.2/src/requests app/requests
+          cp -r py-vend/x/urllib3-2.8.0/src/urllib3 app/urllib3
+          cp -r py-vend/x/charset_normalizer-3.5.2/src/charset_normalizer app/charset_normalizer
+          cp -r py-vend/x/idna-3.20/idna app/idna
+          cp -r py-vend/x/certifi-2026.10.23/certifi app/certifi
+          mkdir -p app/licenses
+          cp py-vend/x/requests-2.34.2/LICENSE app/licenses/requests-LICENSE
+          cp py-vend/x/urllib3-2.8.0/LICENSE.txt app/licenses/urllib3-LICENSE
+          cp py-vend/x/charset_normalizer-3.5.2/LICENSE app/licenses/charset_normalizer-LICENSE
+          cp py-vend/x/idna-3.20/LICENSE.md app/licenses/idna-LICENSE
+          cp py-vend/x/certifi-2026.10.23/LICENSE app/licenses/certifi-LICENSE
+          echo "so files: $(find app -name '*.so' | wc -l)"
+          du -sh app
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        working-directory: ChachaDrama
+        run: xcodegen generate
+      - name: Probe generated project wiring
+        working-directory: ChachaDrama
+        run: |
+          echo "--- Python.xcframework refs in pbxproj ---"
+          grep -n "Python.xcframework" ChachaDrama.xcodeproj/project.pbxproj || echo "NO FRAMEWORK REF"
+          echo "--- FRAMEWORK_SEARCH_PATHS ---"
+          grep -n "FRAMEWORK_SEARCH_PATHS" -A 3 ChachaDrama.xcodeproj/project.pbxproj || echo "NO SEARCH PATHS"
+          echo "--- Embed Frameworks phase ---"
+          grep -n "Embed Frameworks" ChachaDrama.xcodeproj/project.pbxproj || echo "NO EMBED PHASE"
+      - name: Archive (unsigned, for AltStore self-signing)
+        working-directory: ChachaDrama
+        run: |
+          xcodebuild -project ChachaDrama.xcodeproj -scheme ChachaDrama -sdk iphoneos -configuration Release archive -archivePath build/ChachaDrama.xcarchive CODE_SIGNING_ALLOWED=NO
+      - name: Package IPA
+        working-directory: ChachaDrama
+        run: |
+          mkdir -p Payload
+          cp -r build/ChachaDrama.xcarchive/Products/Applications/ChachaDrama.app Payload/
+          zip -r ChachaDrama-unsigned.ipa Payload
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChachaDrama-unsigned-ipa
+          path: ChachaDrama/ChachaDrama-unsigned.ipa
