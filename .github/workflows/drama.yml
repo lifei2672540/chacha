@@ -83,6 +83,50 @@ jobs:
         working-directory: ChachaDrama
         run: |
           xcodebuild -project ChachaDrama.xcodeproj -scheme ChachaDrama -sdk iphoneos -configuration Release archive -archivePath build/ChachaDrama.xcarchive CODE_SIGNING_ALLOWED=NO
+      - name: Convert extension modules to frameworks (ant-video style)
+        working-directory: ChachaDrama
+        run: |
+          set -e
+          # 蚂蚁式打包：裸 .so 签名工具不认，iOS 拒绝加载；每个扩展模块转成
+          # 独立 .framework（标准签名对象），lib-dynload 里只留 .fwork 指针
+          # （内容为相对 .app 的框架二进制路径），运行时由 app/fwfinder.py 按指针加载。
+          # App 此时未签名，打包后改 .app 不破坏任何签名。
+          APP=build/ChachaDrama.xcarchive/Products/Applications/ChachaDrama.app
+          DYNLIB="$APP/Frameworks/Python.framework/lib-dynload"
+          FWDIR="$APP/Frameworks"
+          count=0
+          for so in "$DYNLIB"/*.so; do
+            [ -e "$so" ] || continue
+            base=$(basename "$so")
+            name="${base%%.cpython-*}"
+            mkdir -p "$FWDIR/$name.framework"
+            cp "$so" "$FWDIR/$name.framework/$name"
+            install_name_tool -id "@rpath/$name.framework/$name" "$FWDIR/$name.framework/$name" || true
+            cat > "$FWDIR/$name.framework/Info.plist" <<PLISTEOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key><string>$name</string>
+            <key>CFBundleIdentifier</key><string>org.python.$name</string>
+            <key>CFBundleName</key><string>$name</string>
+            <key>CFBundlePackageType</key><string>FMWK</string>
+            <key>CFBundleShortVersionString</key><string>3.11</string>
+            <key>CFBundleVersion</key><string>1</string>
+            <key>MinimumOSVersion</key><string>16.0</string>
+          </dict>
+          </plist>
+          PLISTEOF
+            printf 'Frameworks/%s.framework/%s' "$name" "$name" > "$DYNLIB/$name.fwork"
+            codesign --force --sign - "$FWDIR/$name.framework/$name" || true
+            rm "$so"
+            count=$((count + 1))
+          done
+          echo "converted $count modules to frameworks"
+          echo "remaining .so in app: $(find "$APP" -name '*.so' | wc -l)"
+          echo "frameworks in app: $(ls -d "$FWDIR"/*.framework | wc -l)"
+          echo "fwork pointers: $(ls "$DYNLIB"/*.fwork | wc -l)"
+          test "$count" -gt 0
       - name: Package IPA
         working-directory: ChachaDrama
         run: |
