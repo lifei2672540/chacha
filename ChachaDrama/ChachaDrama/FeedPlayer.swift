@@ -2,11 +2,16 @@ import AVFoundation
 import SwiftUI
 import UIKit
 
-/// 全屏竖屏播放层：AVPlayerLayer 直填（短剧全屏形态），不走 AVPlayerViewController。
+/// 全屏竖屏播放层：不走 AVPlayerViewController。竖屏视频直填全屏，
+/// 横屏视频自动改完整显示（不裁切），按视频实际尺寸在可播时决定。
 struct PlayerLayerView: UIViewRepresentable {
     var player: AVPlayer?
+    var gravity: AVLayerVideoGravity
     func makeUIView(context: Context) -> PlayerUIView { PlayerUIView() }
-    func updateUIView(_ uiView: PlayerUIView, context: Context) { uiView.setPlayer(player) }
+    func updateUIView(_ uiView: PlayerUIView, context: Context) {
+        uiView.setPlayer(player)
+        uiView.setGravity(gravity)
+    }
 
     final class PlayerUIView: UIView {
         private let playerLayer = AVPlayerLayer()
@@ -21,6 +26,7 @@ struct PlayerLayerView: UIViewRepresentable {
             playerLayer.frame = bounds
         }
         func setPlayer(_ p: AVPlayer?) { playerLayer.player = p }
+        func setGravity(_ g: AVLayerVideoGravity) { playerLayer.videoGravity = g }
     }
 }
 
@@ -33,6 +39,7 @@ final class FeedPlayerModel: ObservableObject {
     @Published var error: String?
     @Published var progress: Double = 0
     @Published var isPlaying = false
+    @Published var gravity: AVLayerVideoGravity = .resizeAspectFill
     var onEnded: (() -> Void)?
 
     private var item: AVPlayerItem?
@@ -55,6 +62,7 @@ final class FeedPlayerModel: ObservableObject {
         error = nil
         progress = 0
         isPlaying = false
+        gravity = .resizeAspectFill
         ready = false
         curEpId = episode.id
         resolveTask = Task { [weak self] in
@@ -114,6 +122,11 @@ final class FeedPlayerModel: ObservableObject {
             ready = true
             watchdog?.cancel()
             loading = false
+            // 按视频实际尺寸定显示方式：竖屏直填，横屏完整显示不裁切
+            let size = it.presentationSize
+            if size.width > 0, size.height > 0 {
+                gravity = size.height >= size.width ? .resizeAspectFill : .resizeAspect
+            }
             if resumeFrom > 5,
                let dur = player?.currentItem?.duration.seconds, dur.isFinite,
                resumeFrom < dur - 10 {
