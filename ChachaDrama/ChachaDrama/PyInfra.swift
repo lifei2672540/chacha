@@ -19,8 +19,9 @@ enum PyRuntime {
         }
         setenv("PYTHONHOME", home, 1)
         if let appPath = Bundle.main.path(forResource: "app", ofType: nil) {
-            // 签名墙：扩展模块 .so 已移进 Python.framework/lib-dynload（AltStore
-            // 签名框架时一并覆盖），把该目录也放进 PYTHONPATH，让 import 找得到它们；
+            // 蚂蚁式框架加载：扩展模块不再是裸 .so，CI 在打包时把它们转成
+            // .framework（见 drama.yml 的转换步骤），lib-dynload 里只留 .fwork
+            // 指针；fwfinder（纯 Python）在 import 时按指针 dlopen 框架二进制。
             // 目录不存在（旧包）时只用 app/，行为与原来一致
             var paths = [appPath]
             let fwDyn = Bundle.main.bundleURL.appendingPathComponent("Frameworks/Python.framework/lib-dynload").path
@@ -33,7 +34,12 @@ enum PyRuntime {
                 setenv("SSL_CERT_FILE", cert, 1)
             }
         }
+        setenv("CHACHA_BUNDLE", Bundle.main.bundlePath, 1)
         Py_Initialize()
+        // 装框架模块加载器；失败只打印，不让 App 起不来（自检会报出缺的模块）
+        if PyRun_SimpleString("import fwfinder") != 0 {
+            PyErr_Print()
+        }
         var v: String
         if let sysMod = PyImport_ImportModule("sys") {
             defer { Py_DecRef(sysMod) }
