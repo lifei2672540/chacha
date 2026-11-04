@@ -6,6 +6,8 @@ import Foundation
 /// 阶段 2：PYTHONPATH 指向 bundle 内的 app/（蜘蛛桥 + 纯 Python 依赖），
 /// 证书指向 app/certifi/cacert.pem；启动末尾 SaveThread 释放主线程的 GIL，
 /// 之后所有 Python 调用统一经 PySpider 的串行队列 + PyGILState_Ensure/Release。
+/// 框架模块加载：启动后 import fwfinder（app/fwfinder.py），按 .fwork 指针加载
+/// 打包步骤转成的 .framework 扩展模块；无指针时走正常 import，不影响旧包。
 enum PyRuntime {
     private static var started = false
     static var version: String = "未启动"
@@ -19,9 +21,8 @@ enum PyRuntime {
         }
         setenv("PYTHONHOME", home, 1)
         if let appPath = Bundle.main.path(forResource: "app", ofType: nil) {
-            // 签名墙实验：扩展模块 .so 已移进 Python.framework/lib-dynload（AltStore
-            // 签名框架时一并覆盖），把该目录也放进 PYTHONPATH，让 import 找得到它们；
-            // 目录不存在（旧包）时只用 app/，行为与原来一致
+            // 框架模块的 .fwork 指针目录也放进 PYTHONPATH（指针文件本身不影响
+            // import，留作兼容）；真正的框架加载走下面的 fwfinder。
             var paths = [appPath]
             let fwDyn = Bundle.main.bundleURL.appendingPathComponent("Frameworks/Python.framework/lib-dynload").path
             if FileManager.default.fileExists(atPath: fwDyn) {
@@ -33,7 +34,12 @@ enum PyRuntime {
                 setenv("SSL_CERT_FILE", cert, 1)
             }
         }
+        setenv("GHT63_BUNDLE", Bundle.main.bundlePath, 1)
         Py_Initialize()
+        // 框架模块加载器：失败只打印，不阻断启动；自检会报出缺失的模块
+        if PyRun_SimpleString("import fwfinder") != 0 {
+            PyErr_Print()
+        }
         var v: String
         if let sysMod = PyImport_ImportModule("sys") {
             defer { Py_DecRef(sysMod) }
