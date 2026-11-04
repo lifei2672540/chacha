@@ -319,7 +319,7 @@ struct FeedCell: View {
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                PlayerLayerView(player: player.player)
+                PlayerLayerView(player: player.player, gravity: player.gravity)
                     .ignoresSafeArea()
                     .onTapGesture {
                         player.togglePlay()
