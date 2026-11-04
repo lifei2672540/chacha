@@ -1,0 +1,40 @@
+name: ChachaDrama
+options:
+  bundleIdPrefix: com.chacha
+targets:
+  ChachaDrama:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: ChachaDrama
+      # 内嵌 Python 标准库（CI 里从 BeeWare 包拷出，真机 slice，见 workflow）
+      - path: python
+        type: folder
+      # 蜘蛛桥 + 纯 Python 依赖（桥代码进仓库，第三方包由 CI 拉源码包解进 app/）
+      - path: app
+        type: folder
+    # 注意：XcodeGen 没有 target 级 frameworks 键，预编译框架必须走 dependencies 的 framework 项。
+    dependencies:
+      - framework: Python.xcframework
+        embed: true
+    info:
+      path: ChachaDrama/Info.plist
+      properties:
+        CFBundleDisplayName: 茶茶短剧
+        CFBundleShortVersionString: 1.0.0
+        CFBundleVersion: "1"
+        # 启动屏：没有它 iOS 会把 App 当老应用 letterbox（16 Pro Max 上只占半屏）
+        UILaunchScreen: {}
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.chacha.drama
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_OBJC_BRIDGING_HEADER: ChachaDrama/ChachaDrama-Bridging-Header.h
