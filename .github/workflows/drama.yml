@@ -65,6 +65,14 @@ jobs:
           cp py-vend/x/certifi-2026.10.23/LICENSE app/licenses/certifi-LICENSE
           echo "so files: $(find app -name '*.so' | wc -l)"
           du -sh app
+      # 交叉 venv 必须用与目标一致的 Python 3.11 建（xvenv 源码校验：
+      # 目标 venv 的版本必须与 sysconfig 的 VERSION 一致，否则报
+      # "target venv is Python X; build details file is for Python 3.11"；
+      # runner 自带的 python3 是 3.12/3.13，直接建 venv 一定失败）。
+      - name: Setup Python 3.11 for cross build
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - name: Build Crypto and lxml for iOS (best effort)
         working-directory: ChachaDrama
         continue-on-error: true
@@ -74,16 +82,19 @@ jobs:
           # cibuildwheel 的 iOS 构建只支持 3.13/3.14，本项目是 3.11，此路不通。
           # 本步失败不影响主构建：没编出来的库，源照旧显示原因，不闪退。
           echo "=== Crypto/lxml cross build (best effort) ==="
-          # 交叉 venv：--sysconfig 指向已下载的 BeeWare 3.11 构建（--sysconfig 不能和
-          # --platform 同用；不带 --sysconfig 时 xvenv 会自己下载最新版 Python 3.15，
-          # 编出来的扩展与本项目 3.11 解释器不兼容，绝不能用那个退路）。
+          # 交叉 venv：只带 --sysconfig，不带 --platform 也不带 --arch。
+          # --sysconfig 不能和 --platform 同用；--arch 又必须配 --platform
+          # （1.0.6 就是死在这句上）；不带 --sysconfig 时 xvenv 会自己下载
+          # 最新版 Python 3.15，编出来的扩展与本项目 3.11 解释器不兼容。
+          # sysconfig 文件本身已标明 arm64-iphoneos，不用再传 --arch。
+          python3 --version
           SYSCONFIG=$(find py-support -name "_sysconfigdata__ios_arm64-iphoneos.py" 2>/dev/null | head -1)
           echo "sysconfig: ${SYSCONFIG:-none}"
           if [ -z "$SYSCONFIG" ]; then echo "CRYPTO_LXML: no 3.11 sysconfig found"; exit 0; fi
           python3 -m venv venv-xbuild
           source venv-xbuild/bin/activate
           python -m pip install -q xbuild
-          xvenv --sysconfig "$SYSCONFIG" --arch arm64-iphoneos x-venv || { echo "CRYPTO_LXML: xvenv --sysconfig failed"; exit 0; }
+          xvenv --sysconfig "$SYSCONFIG" x-venv || { echo "CRYPTO_LXML: xvenv --sysconfig failed"; exit 0; }
           if [ ! -d x-venv ]; then echo "CRYPTO_LXML: xvenv failed"; exit 0; fi
           source x-venv/bin/activate || true
           # 在交叉 venv 里直接用 pip wheel 编轮子：pip 会按目标平台的 sysconfig
