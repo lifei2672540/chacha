@@ -74,7 +74,11 @@ jobs:
           # （cibuildwheel 的 iOS 构建只支持 3.13/3.14，本项目是 3.11，此路不通）。
           # 本步失败不影响主构建：没编出来的库，源照旧显示原因，不闪退。
           echo "=== Crypto/lxml cross build (best effort) ==="
-          python3 -m pip install -q xbuild
+          # Runner 的系统 Python 受 PEP 668 限制，直接 pip install 会报
+          # externally-managed-environment；先建一个 venv，在 venv 里装 xbuild。
+          python3 -m venv venv-xbuild
+          source venv-xbuild/bin/activate
+          python -m pip install -q xbuild
           mkdir -p py-vend/x-cross
           python3 -m pip download --no-deps --no-binary :all: -d py-vend/sdists "pycryptodome==3.23.0" "lxml==6.0.0" -q
           tar xzf py-vend/sdists/pycryptodome-3.23.0.tar.gz -C py-vend/x-cross
