@@ -1,10 +1,11 @@
 import SwiftUI
 
-/// 首页顶部三档（截图顺序）：关注 = 本机关注的剧；漫剧 = 源内分类浏览；推荐 = 竖屏 Feed。
+/// 首页顶部档位（截图顺序）：关注 = 本机关注的剧；漫剧 = 源内分类浏览；推荐 = 竖屏 Feed；继续 = 本机继续观看。
 enum TopTab: String, CaseIterable {
     case follow = "关注"
     case category = "漫剧"
     case recommend = "推荐"
+    case resume = "继续"
 }
 
 @MainActor
@@ -29,6 +30,9 @@ final class FeedViewModel: ObservableObject {
     private var detailCache: [String: DramaDetail] = [:]
     private var hintTask: Task<Void, Never>?
     private var gotoLast = false
+    /// 从“继续观看”点进来时要恢复的线路/集，loadCurrent 拉到详情后一次性用掉。
+    private var pendingResumeLine: Int?
+    private var pendingResumeEp: Int?
 
     var currentDrama: Drama? {
         dramas.indices.contains(dramaIdx) ? dramas[dramaIdx] : nil
@@ -48,10 +52,12 @@ final class FeedViewModel: ObservableObject {
             for s in sources.prefix(3) {
                 do {
                     try await loadHome(source: s)
+                    Store.shared.markSourceOK(s.api)
                     // 首屏先播起来，后台再从另外 2 个源补剧进推荐池，不堵首屏。
                     Task { await self.expandPool(excluding: s) }
                     return
                 } catch {
+                    Store.shared.markSourceFailed(s.api)
                     lastErr = "\(error)"
                 }
             }
@@ -80,8 +86,12 @@ final class FeedViewModel: ObservableObject {
             for s in sources.filter({ $0.api != okSource.api }).prefix(2) {
                 do {
                     let (_, list) = try await PyAPI.home(source: s)
+                    Store.shared.markSourceOK(s.api)
                     extra += list
-                } catch { continue }
+                } catch {
+                    Store.shared.markSourceFailed(s.api)
+                    continue
+                }
                 if extra.count >= 40 { break }
             }
             guard !extra.isEmpty, !isBinge, source?.api == okSource.api else { return }
@@ -127,6 +137,10 @@ final class FeedViewModel: ObservableObject {
                 return
             }
             lineIdx = max(0, min(lineIdx, det.lines.count - 1))
+            if let pr = pendingResumeLine {
+                pendingResumeLine = nil
+                lineIdx = max(0, min(pr, det.lines.count - 1))
+            }
             let eps = det.lines[lineIdx].episodes
             guard !eps.isEmpty else {
                 dramaError = "该线路暂无选集"
@@ -135,6 +149,9 @@ final class FeedViewModel: ObservableObject {
             if gotoLast {
                 gotoLast = false
                 epIdx = eps.count - 1
+            } else if let pr = pendingResumeEp {
+                pendingResumeEp = nil
+                epIdx = max(0, min(pr, eps.count - 1))
             } else {
                 epIdx = max(0, min(epIdx, eps.count - 1))
             }
@@ -274,6 +291,14 @@ final class FeedViewModel: ObservableObject {
         playCurrent()
     }
 
+    /// 从“继续观看”点进来：直接进合集，恢复到当时那条线路、那一集，播到上次的进度。
+    func jumpToResume(_ item: ResumeItem) {
+        let d = item.toDrama()
+        pendingResumeLine = item.lineIdx
+        pendingResumeEp = item.epIdx
+        jumpTo(drama: d, source: d.source, inList: nil)
+    }
+
     func setLine(_ idx: Int) {
         guard let det = detail, det.lines.indices.contains(idx) else { return }
         lineIdx = idx
@@ -324,6 +349,8 @@ struct FeedView: View {
                     CategoryBrowser(vm: vm, onPick: { d, list in
                         vm.jumpTo(drama: d, source: vm.source ?? d.source, inList: list)
                     })
+                case .resume:
+                    ResumeList(vm: vm)
                 }
             }
         }
@@ -426,22 +453,77 @@ struct FeedCell: View {
     @State private var showPaused = false
     /// 正在拖进度条时的目标位置（0...1），松手后调用 player.seek。
     @State private var seekFraction: Double?
+    /// 双击快进/快退时闪一下的提示；长按 2 倍速进行中；长按松手后短暂屏蔽随之而来的单击（否则会误暂停）。
+    @State private var seekFlash: String?
+    @State private var fastForward = false
+    @State private var suppressTap = false
+    @State private var flashTask: Task<Void, Never>?
+
+    /// 左右两半屏的手势区：单击暂停/续播，双击左右快进/快退 10 秒，长按 2 倍速。
+    /// 单击和双击都挂在同一半屏上，系统自己区分；长按松手后屏蔽一次单击，防误暂停。
+    @ViewBuilder
+    private func tapHalf(isLeft: Bool) -> some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) {
+                player.seekBy(seconds: isLeft ? -10 : 10)
+                seekFlash = isLeft ? "快退 10 秒" : "快进 10 秒"
+                flashTask?.cancel()
+                flashTask = Task {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    seekFlash = nil
+                }
+            }
+            .onTapGesture(count: 1) {
+                if suppressTap { return }
+                player.togglePlay()
+                if !player.isPlaying {
+                    showPaused = true
+                    Task {
+                        try? await Task.sleep(nanoseconds: 800_000_000)
+                        showPaused = false
+                    }
+                }
+            }
+            .onLongPressGesture(minimumDuration: 0.35, pressing: { pressing in
+                if pressing {
+                    player.startFastForward()
+                    fastForward = true
+                } else {
+                    player.stopFastForward()
+                    fastForward = false
+                    suppressTap = true
+                    Task {
+                        try? await Task.sleep(nanoseconds: 300_000_000)
+                        suppressTap = false
+                    }
+                }
+            }, perform: {})
+    }
 
     var body: some View {
         GeometryReader { _ in
             ZStack {
                 PlayerLayerView(player: player.player, gravity: player.gravity)
                     .ignoresSafeArea()
-                    .onTapGesture {
-                        player.togglePlay()
-                        if !player.isPlaying {
-                            showPaused = true
-                            Task {
-                                try? await Task.sleep(nanoseconds: 800_000_000)
-                                showPaused = false
-                            }
-                        }
-                    }
+                HStack(spacing: 0) {
+                    tapHalf(isLeft: true)
+                    tapHalf(isLeft: false)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if fastForward {
+                    Text("2× 快进中").font(.subheadline).bold().foregroundColor(.white)
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(Color.black.opacity(0.7)).cornerRadius(8)
+                        .padding(.top, 90)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                }
+                if let flash = seekFlash {
+                    Text(flash).font(.subheadline).bold().foregroundColor(.white)
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(Color.black.opacity(0.7)).cornerRadius(8)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                }
                 if showPaused {
                     Image(systemName: "pause.fill").font(.system(size: 60))
                         .foregroundColor(.white.opacity(0.8))
@@ -643,7 +725,7 @@ struct EpisodeSheet: View {
     }
 }
 
-// MARK: - 本源搜索
+// MARK: - 跨源搜索：一次搜订阅里的前 5 个源（PY + CMS），按剧名去重，边搜边出结果。
 
 struct SearchSheet: View {
     @ObservedObject var vm: FeedViewModel
@@ -651,43 +733,47 @@ struct SearchSheet: View {
     @State private var wd = ""
     @State private var results: [Drama] = []
     @State private var searching = false
+    @State private var status = ""
     @State private var error: String?
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 HStack {
-                    TextField("搜本源剧名", text: $wd)
+                    TextField("搜全部源剧名", text: $wd)
                         .textFieldStyle(.roundedBorder)
                         .textInputAutocapitalization(.never)
                     Button("搜索") { Task { await doSearch() } }
                 }
                 .padding()
                 if searching {
-                    Spacer()
-                    ProgressView()
-                    Spacer()
-                } else if let error = error {
-                    Spacer()
-                    Text(error).foregroundColor(.red).padding()
-                    Spacer()
-                } else {
-                    ScrollView {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 105), spacing: 12)], spacing: 16) {
-                            ForEach(results) { d in
-                                Button {
-                                    if let s = vm.source {
-                                        vm.jumpTo(drama: d, source: s, inList: results)
-                                    }
-                                    dismiss()
-                                } label: {
-                                    DramaCard(drama: d)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .padding()
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text(status).font(.caption).foregroundColor(.gray)
                     }
+                    .padding(.bottom, 8)
+                }
+                if let error = error {
+                    Text(error).foregroundColor(.red).padding()
+                }
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 105), spacing: 12)], spacing: 16) {
+                        ForEach(results) { d in
+                            Button {
+                                // 结果来自哪个源就用哪个源播，别用当前源去播别的源的剧。
+                                vm.jumpTo(drama: d, source: d.source, inList: results)
+                                dismiss()
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    DramaCard(drama: d)
+                                    Text(d.source.displayName).font(.caption2)
+                                        .foregroundColor(.gray).lineLimit(1)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding()
                 }
             }
             .navigationTitle("搜索")
@@ -701,19 +787,42 @@ struct SearchSheet: View {
     }
 
     private func doSearch() async {
-        guard let s = vm.source else {
-            error = "请先在剧场选一个源"
-            return
-        }
         let w = wd.trimmingCharacters(in: .whitespaces)
         guard !w.isEmpty else { return }
         searching = true
+        error = nil
+        results = []
+        status = "正在拉订阅…"
         defer { searching = false }
         do {
-            results = try await PyAPI.search(source: s, wd: w)
-            error = nil
+            let sources = try await PyAPI.subscription(url: Store.shared.subURL)
+            var found: [Drama] = []
+            var tried = 0
+            for s in sources.prefix(5) {
+                // PY 源先看脚本是否要 Crypto/lxml：要的话本机跑不起来，直接跳过，不浪费一次桥调用。
+                if !s.isCMS {
+                    do {
+                        let code = try await PyAPI.script(api: s.api)
+                        if code.contains("Crypto") || code.contains("lxml") { continue }
+                    } catch { continue }
+                }
+                tried += 1
+                status = "正在搜第 \(tried) 个源…"
+                do {
+                    let list = try await PyAPI.search(source: s, wd: w)
+                    let seen = Set(found.map { $0.name })
+                    found += list.filter { !$0.name.isEmpty && !seen.contains($0.name) }
+                    results = found
+                    status = "已搜 \(tried) 个源，共 \(found.count) 部"
+                } catch { continue }
+            }
+            if found.isEmpty {
+                error = "前 5 个源都没搜到“\(w)”"
+            } else {
+                error = nil
+            }
         } catch {
-            self.error = "搜索失败：\(error)"
+            self.error = "订阅加载失败：\(error)"
         }
     }
 }
@@ -743,6 +852,72 @@ struct FavoritesGrid: View {
                 .padding()
             }
         }
+    }
+}
+
+// MARK: - 继续观看：本机存的进度（看满 5 秒的集），点进去恢复到当时那集、那个进度。
+
+struct ResumeList: View {
+    @ObservedObject var vm: FeedViewModel
+    @ObservedObject var store = Store.shared
+
+    var body: some View {
+        if store.resumes.isEmpty {
+            VStack(spacing: 8) {
+                Text("还没有继续观看的记录").foregroundColor(.gray)
+                Text("看满 5 秒的剧会自动出现在这里").font(.caption).foregroundColor(.gray)
+            }
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 12) {
+                    ForEach(store.resumes) { item in
+                        HStack(spacing: 12) {
+                            Button { vm.jumpToResume(item) } label: {
+                                HStack(spacing: 12) {
+                                    AsyncImage(url: URL(string: item.pic)) { phase in
+                                        if let img = phase.image {
+                                            img.resizable().aspectRatio(contentMode: .fill)
+                                        } else {
+                                            Color(white: 0.2)
+                                        }
+                                    }
+                                    .frame(width: 56, height: 78)
+                                    .clipped()
+                                    .cornerRadius(6)
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(item.name).font(.subheadline).bold()
+                                            .foregroundColor(.white).lineLimit(1)
+                                        Text("第\(item.epIdx + 1)集 \(item.epTitle)")
+                                            .font(.caption).foregroundColor(.gray).lineLimit(1)
+                                        Text("已看 \(formatTime(item.time))")
+                                            .font(.caption).foregroundColor(.orange)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "play.circle")
+                                        .font(.title2).foregroundColor(.orange)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            Button { store.removeResume(id: item.id) } label: {
+                                Image(systemName: "trash").foregroundColor(.gray)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal)
+                    }
+                    Button("清空全部") { store.clearResumes() }
+                        .buttonStyle(.bordered)
+                        .padding(.top, 8)
+                }
+                .padding(.vertical)
+            }
+        }
+    }
+
+    private func formatTime(_ s: Double) -> String {
+        guard s.isFinite, s >= 0 else { return "0:00" }
+        let i = Int(s)
+        return "\(i / 60):\(String(format: "%02d", i % 60))"
     }
 }
 
