@@ -107,8 +107,18 @@ jobs:
           # 调用 iOS 交叉编译器。xbuild 本身不在交叉 venv 的 PATH 里，上次就是卡在这里。
           mkdir -p dist-cross
           python -m pip wheel --no-deps --no-binary :all: -w dist-cross "pycryptodome==3.23.0" || echo "CRYPTO_LXML: pycryptodome wheel failed"
-          # lxml 走静态依赖：iOS SDK 有 libxml2、无 libxslt，只能静态链接 libxml2+libxslt
-          STATIC_DEPS=true python -m pip wheel --no-deps --no-binary :all: -w dist-cross "lxml==6.0.0" || echo "CRYPTO_LXML: lxml wheel failed"
+          # lxml 走静态依赖：iOS SDK 有 libxml2、无 libxslt，只能静态链接 libxml2+libxslt。
+          # 但不能直接 pip wheel PyPI 上的包：buildlibxml.py 给 libiconv/libxml2/libxslt
+          # 调 ./configure 时不传 --host，交叉编译器下 autoconf 会试图运行刚编出的程序，
+          # 报 "cannot run C compiled programs"，etree 根本没开始编（1.0.8 就是死在这）。
+          # 修法：先下载 sdist，用 scripts/patch_lxml_buildlibxml.py 给 configure_cmd
+          # 加 '--host=arm64-apple-ios' 和 '--disable-nls'（后者防 msgfmt 缺失时 make
+          # 卡在 po/ 翻译目录），再从打过补丁的本地源码编轮子。沙箱已用真 aarch64
+          # 交叉编译器复现并验证：不带 --host 失败，带 --host 后三家的 configure+make 全通。
+          python3 -m pip download --no-deps --no-binary :all: -d lxml-sdist "lxml==6.0.0" -q || echo "CRYPTO_LXML: lxml sdist download failed"
+          mkdir -p lxml-src && tar xzf lxml-sdist/lxml-6.0.0.tar.gz -C lxml-src --strip-components=1
+          python3 scripts/patch_lxml_buildlibxml.py lxml-src/buildlibxml.py || echo "CRYPTO_LXML: lxml patch failed"
+          STATIC_DEPS=true python -m pip wheel --no-deps --no-binary :all: -w dist-cross ./lxml-src || echo "CRYPTO_LXML: lxml wheel failed"
           deactivate || true
           find dist-cross -name '*.whl' | sort
           mkdir -p py-vend/cross
