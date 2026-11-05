@@ -2,8 +2,11 @@ import SwiftUI
 
 /// 我的：订阅地址、内嵌 Python 版本、PY 自检、本地报错日志。
 struct SettingsView: View {
-    @State private var subURLText = Store.shared.subURL
+    @State private var subURLs = Store.shared.subURLs
+    @State private var activeURL = Store.shared.subURL
+    @State private var newURLText = ""
     @State private var savedHint = ""
+    @State private var refreshing = false
     @State private var selfTestResult = ""
     @State private var testing = false
     @State private var logText = ErrorLog.read()
@@ -12,23 +15,69 @@ struct SettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("订阅").font(.headline)
-                    TextField("订阅地址", text: $subURLText)
+                    Text("订阅接口").font(.headline)
+                    ForEach(subURLs, id: \.self) { url in
+                        HStack {
+                            Button {
+                                activateSubURL(url)
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: url == activeURL ? "checkmark.circle.fill" : "circle")
+                                        .foregroundColor(url == activeURL ? .orange : .gray)
+                                    Text(url).font(.caption).lineLimit(2)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            Spacer()
+                            if subURLs.count > 1 {
+                                Button {
+                                    Store.shared.removeSubURL(url)
+                                    syncSubURLs()
+                                    savedHint = "已删除该接口"
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                        }
+                    }
+                    TextField("新增订阅地址", text: $newURLText)
                         .textFieldStyle(.roundedBorder)
                         .textInputAutocapitalization(.never)
                     HStack {
-                        Button("保存") {
-                            Store.shared.subURL = subURLText.trimmingCharacters(in: .whitespaces)
-                            savedHint = "已保存，去剧场重新加载生效"
+                        Button("添加并切换") {
+                            let url = newURLText.trimmingCharacters(in: .whitespaces)
+                            guard !url.isEmpty else {
+                                savedHint = "地址不能为空"
+                                return
+                            }
+                            if subURLs.contains(url) {
+                                activateSubURL(url)
+                                savedHint = "已在列表中，已切换为当前接口"
+                            } else {
+                                Store.shared.subURLs = subURLs + [url]
+                                Store.shared.setActiveSubURL(url)
+                                newURLText = ""
+                                syncSubURLs()
+                                savedHint = "已添加并切换为当前接口"
+                            }
                         }
                         .buttonStyle(.bordered)
+                        Button(refreshing ? "刷新中…" : "刷新订阅") {
+                            Task { await refreshSubscription() }
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(refreshing)
                         Button("恢复默认") {
-                            subURLText = PyAPI.defaultSubscription
+                            Store.shared.subURLs = [PyAPI.defaultSubscription]
                             Store.shared.subURL = PyAPI.defaultSubscription
+                            syncSubURLs()
                             savedHint = "已恢复默认 ok海豚订阅"
                         }
                         .buttonStyle(.bordered)
                     }
+                    Text("点地址切换当前接口；刷新会重新拉当前接口并清掉已缓存的 PY 脚本，新加的源去剧场就能看到。")
+                        .font(.caption).foregroundColor(.gray)
                     if !savedHint.isEmpty {
                         Text(savedHint).font(.caption).foregroundColor(.gray)
                     }
@@ -67,7 +116,7 @@ struct SettingsView: View {
                         ShareLink(item: logText) { Text("分享") }.buttonStyle(.bordered)
                     }
                 }
-                Text("茶茶短剧 1.0.0（原生版）")
+                Text("茶茶短剧 1.0.1（原生版）")
                     .font(.caption).foregroundColor(.gray)
                 Text("说明：本版只接订阅里的 PY 源（CMS 源后续可加）；要 Crypto/lxml、或走 HTTPS 的源暂不可用——这是 AltStore 自签下扩展模块加载不了的限制，不是代码问题；蚂蚁那种正式签名的包不受此限。")
                     .font(.caption).foregroundColor(.gray)
@@ -75,6 +124,29 @@ struct SettingsView: View {
             .padding()
         }
         .navigationTitle("我的")
+    }
+
+    private func syncSubURLs() {
+        subURLs = Store.shared.subURLs
+        activeURL = Store.shared.subURL
+    }
+
+    private func activateSubURL(_ url: String) {
+        Store.shared.setActiveSubURL(url)
+        syncSubURLs()
+        savedHint = "已切换为当前接口，去剧场查看"
+    }
+
+    private func refreshSubscription() async {
+        refreshing = true
+        defer { refreshing = false }
+        do {
+            let sources = try await PyAPI.subscription(url: Store.shared.subURL)
+            PyAPI.clearScriptCache()
+            savedHint = "已刷新：当前接口共 \(sources.count) 个 PY 源，去剧场查看"
+        } catch {
+            savedHint = "刷新失败：\(firstLine("\(error)"))"
+        }
     }
 
     private func probeScript(_ mod: String) -> String {
