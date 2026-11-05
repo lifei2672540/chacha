@@ -70,34 +70,28 @@ jobs:
         continue-on-error: true
         run: |
           set +e
-          # 第二步：要 Crypto/lxml 的源才能跑。没有现成配方，走 BeeWare xbuild 交叉编译
-          # （cibuildwheel 的 iOS 构建只支持 3.13/3.14，本项目是 3.11，此路不通）。
+          # 第二步：要 Crypto/lxml 的源才能跑。没有现成配方，走 BeeWare xbuild 的交叉 venv；
+          # cibuildwheel 的 iOS 构建只支持 3.13/3.14，本项目是 3.11，此路不通。
           # 本步失败不影响主构建：没编出来的库，源照旧显示原因，不闪退。
           echo "=== Crypto/lxml cross build (best effort) ==="
-          # Runner 的系统 Python 受 PEP 668 限制，直接 pip install 会报
-          # externally-managed-environment；先建一个 venv，在 venv 里装 xbuild。
+          # 交叉 venv：--sysconfig 指向已下载的 BeeWare 3.11 构建（--sysconfig 不能和
+          # --platform 同用；不带 --sysconfig 时 xvenv 会自己下载最新版 Python 3.15，
+          # 编出来的扩展与本项目 3.11 解释器不兼容，绝不能用那个退路）。
+          SYSCONFIG=$(find py-support -name "_sysconfigdata__ios_arm64-iphoneos.py" 2>/dev/null | head -1)
+          echo "sysconfig: ${SYSCONFIG:-none}"
+          if [ -z "$SYSCONFIG" ]; then echo "CRYPTO_LXML: no 3.11 sysconfig found"; exit 0; fi
           python3 -m venv venv-xbuild
           source venv-xbuild/bin/activate
           python -m pip install -q xbuild
-          mkdir -p py-vend/x-cross
-          python3 -m pip download --no-deps --no-binary :all: -d py-vend/sdists "pycryptodome==3.23.0" "lxml==6.0.0" -q
-          tar xzf py-vend/sdists/pycryptodome-3.23.0.tar.gz -C py-vend/x-cross
-          tar xzf py-vend/sdists/lxml-6.0.0.tar.gz -C py-vend/x-cross
-          ls py-vend/x-cross/
-          # 交叉 venv：优先用已下载的 BeeWare 3.11 构建做 sysconfig，否则让 xvenv 自己下载同源构建
-          SYSCONFIG=$(find py-support -name "_sysconfigdata__ios_arm64-iphoneos.py" 2>/dev/null | head -1)
-          echo "sysconfig: ${SYSCONFIG:-none}"
-          if [ -n "$SYSCONFIG" ]; then
-            xvenv --platform ios --arch arm64-iphoneos --sysconfig "$SYSCONFIG" x-venv || xvenv --platform ios --arch arm64-iphoneos x-venv
-          else
-            xvenv --platform ios --arch arm64-iphoneos x-venv
-          fi
+          xvenv --sysconfig "$SYSCONFIG" --arch arm64-iphoneos x-venv || { echo "CRYPTO_LXML: xvenv --sysconfig failed"; exit 0; }
           if [ ! -d x-venv ]; then echo "CRYPTO_LXML: xvenv failed"; exit 0; fi
           source x-venv/bin/activate || true
+          # 在交叉 venv 里直接用 pip wheel 编轮子：pip 会按目标平台的 sysconfig
+          # 调用 iOS 交叉编译器。xbuild 本身不在交叉 venv 的 PATH 里，上次就是卡在这里。
           mkdir -p dist-cross
-          (cd dist-cross && xbuild ../py-vend/x-cross/pycryptodome-3.23.0 --platform ios --arch arm64-iphoneos) || echo "CRYPTO_LXML: pycryptodome xbuild failed"
+          python -m pip wheel --no-deps --no-binary :all: -w dist-cross "pycryptodome==3.23.0" || echo "CRYPTO_LXML: pycryptodome wheel failed"
           # lxml 走静态依赖：iOS SDK 有 libxml2、无 libxslt，只能静态链接 libxml2+libxslt
-          (cd dist-cross && STATIC_DEPS=true xbuild ../py-vend/x-cross/lxml-6.0.0 --platform ios --arch arm64-iphoneos) || echo "CRYPTO_LXML: lxml xbuild failed"
+          STATIC_DEPS=true python -m pip wheel --no-deps --no-binary :all: -w dist-cross "lxml==6.0.0" || echo "CRYPTO_LXML: lxml wheel failed"
           deactivate || true
           find dist-cross -name '*.whl' | sort
           mkdir -p py-vend/cross
