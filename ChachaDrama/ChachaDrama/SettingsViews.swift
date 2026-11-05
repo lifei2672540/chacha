@@ -116,7 +116,7 @@ struct SettingsView: View {
                         ShareLink(item: logText) { Text("分享") }.buttonStyle(.bordered)
                     }
                 }
-                Text("茶茶短剧 1.0.1（原生版）")
+                Text("茶茶短剧 1.0.2（原生版）")
                     .font(.caption).foregroundColor(.gray)
                 Text("说明：本版只接订阅里的 PY 源（CMS 源后续可加）；要 Crypto/lxml、或走 HTTPS 的源暂不可用——这是 AltStore 自签下扩展模块加载不了的限制，不是代码问题；蚂蚁那种正式签名的包不受此限。")
                     .font(.caption).foregroundColor(.gray)
