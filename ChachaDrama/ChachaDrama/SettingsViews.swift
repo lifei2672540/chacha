@@ -116,7 +116,7 @@ struct SettingsView: View {
                         ShareLink(item: logText) { Text("分享") }.buttonStyle(.bordered)
                     }
                 }
-                Text("茶茶短剧 1.0.7（原生版）")
+                Text("茶茶短剧 1.0.8（原生版）")
                     .font(.caption).foregroundColor(.gray)
                 Text("说明：本版接订阅里的 PY 源与 CMS 源；要 Crypto/lxml 的源能不能跑，看上面自检里 Crypto.Cipher.AES / lxml.etree 两行（自签下扩展模块要转成框架才能加载）。")
                     .font(.caption).foregroundColor(.gray)
