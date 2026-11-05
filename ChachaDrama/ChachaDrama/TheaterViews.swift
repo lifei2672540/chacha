@@ -107,7 +107,9 @@ struct TheaterView: View {
             }
         }
         .task {
-            if sources.isEmpty { await loadSubscription() }
+            // 每次进剧场都重拉订阅：接口里新加的 PY 源不用杀 App 就能出现。
+            // 已选源还在就保持不动；已被接口删掉才回落到新列表的第一个源。
+            await loadSubscription()
         }
     }
 
@@ -116,7 +118,18 @@ struct TheaterView: View {
         defer { loading = false }
         do {
             sources = try await PyAPI.subscription(url: Store.shared.subURL)
-            if selSource == nil, let first = sources.first {
+            if let cur = selSource {
+                if let match = sources.first(where: { $0.api == cur.api }) {
+                    selSource = match
+                } else {
+                    selSource = sources.first
+                    classes = []
+                    items = []
+                    pg = 1
+                    pagecount = 1
+                    if selSource != nil { await loadTheaterHome() }
+                }
+            } else if let first = sources.first {
                 selSource = first
                 await loadTheaterHome()
             }
