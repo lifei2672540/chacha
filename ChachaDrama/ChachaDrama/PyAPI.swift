@@ -107,6 +107,11 @@ enum PyAPI {
         return code
     }
 
+    /// 刷新订阅时清掉已缓存的 PY 脚本：接口里新加的源、或改过的脚本，下次用时重新拉，不吃旧缓存。
+    static func clearScriptCache() {
+        cacheQueue.sync { scriptCache.removeAll() }
+    }
+
     /// 桥调用必须离主线程：PySpider.run 是同步调用，蜘蛛里有网络时会堵住调用线程。
     static func runOffMain(code: String, ext: String, method: String, argsJson: String) async throws -> String {
         try await Task.detached(priority: .userInitiated) {
@@ -230,6 +235,32 @@ final class Store: ObservableObject {
     nonisolated var subURL: String {
         get { UserDefaults.standard.string(forKey: "dramaSubUrl") ?? PyAPI.defaultSubscription }
         set { UserDefaults.standard.set(newValue, forKey: "dramaSubUrl") }
+    }
+
+    /// 多订阅地址列表（新）。老用户只有单个 dramaSubUrl 时，列表就是 [那个地址]，不丢用户自己的地址。
+    nonisolated var subURLs: [String] {
+        get {
+            if let arr = UserDefaults.standard.array(forKey: "dramaSubUrls") as? [String], !arr.isEmpty {
+                return arr
+            }
+            return [subURL]
+        }
+        set {
+            let cleaned = newValue.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            UserDefaults.standard.set(cleaned.isEmpty ? [PyAPI.defaultSubscription] : cleaned, forKey: "dramaSubUrls")
+        }
+    }
+
+    nonisolated func setActiveSubURL(_ url: String) {
+        subURL = url
+        if !subURLs.contains(url) { subURLs = subURLs + [url] }
+    }
+
+    nonisolated func removeSubURL(_ url: String) {
+        var list = subURLs.filter { $0 != url }
+        if list.isEmpty { list = [PyAPI.defaultSubscription] }
+        subURLs = list
+        if subURL == url { subURL = list[0] }
     }
 
     func isFavorite(drama: Drama) -> Bool {
