@@ -37,7 +37,12 @@ struct TheaterView: View {
                 Button("用这个源刷首页") {
                     if let s = selSource {
                         Task {
-                            try? await vm.loadHome(source: s)
+                            do {
+                                try await vm.loadHome(source: s)
+                                Store.shared.markSourceOK(s.api)
+                            } catch {
+                                Store.shared.markSourceFailed(s.api)
+                            }
                             tabSelection = 0
                         }
                     }
@@ -96,7 +101,7 @@ struct TheaterView: View {
             if let error = error, !items.isEmpty {
                 Text(error).font(.caption).foregroundColor(.red).padding(.horizontal)
             }
-            Text("PY 源跑在本机内嵌 Python 上（纯 Python 子集）；要 Crypto/lxml、或走 HTTPS 的源会显示原因，不闪退。")
+            Text("PY 源跑在本机内嵌 Python 上（纯 Python 子集）；CMS 源直接拉站；要 Crypto/lxml 的源会显示原因，不闪退。")
                 .font(.caption2).foregroundColor(.gray).padding()
         }
         .navigationTitle("剧场")
@@ -149,11 +154,13 @@ struct TheaterView: View {
         defer { loading = false }
         do {
             let (cls, list) = try await PyAPI.home(source: s)
+            Store.shared.markSourceOK(s.api)
             classes = cls
             items = list
             pagecount = 1
             error = nil
         } catch {
+            Store.shared.markSourceFailed(s.api)
             self.error = "源加载失败：\(error)"
         }
     }
@@ -232,8 +239,14 @@ struct SourcePickerSheet: View {
                             onPick(s)
                             dismiss()
                         } label: {
-                            HStack {
+                            HStack(spacing: 8) {
+                                // 源健康：绿=最近成功过，红=最近一次失败，灰=还没试过（由首页/剧场/自检实际跑过后才记）。
+                                Circle()
+                                    .fill(healthColor(for: s))
+                                    .frame(width: 8, height: 8)
                                 Text(s.displayName).foregroundColor(.white)
+                                Text(s.isCMS ? "CMS" : "PY")
+                                    .font(.caption2).foregroundColor(.gray)
                                 Spacer()
                                 if s.id == selSource?.id {
                                     Image(systemName: "checkmark").foregroundColor(.orange)
@@ -257,5 +270,13 @@ struct SourcePickerSheet: View {
         let f = filter.trimmingCharacters(in: .whitespaces)
         guard !f.isEmpty else { return sources }
         return sources.filter { $0.displayName.contains(f) || $0.name.contains(f) }
+    }
+
+    private func healthColor(for s: PySource) -> Color {
+        switch Store.shared.sourceHealth(s.api) {
+        case .ok: return .green
+        case .failed: return .red
+        case .unknown: return .gray
+        }
     }
 }
