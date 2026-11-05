@@ -38,6 +38,8 @@ final class FeedPlayerModel: ObservableObject {
     @Published var loading = false
     @Published var error: String?
     @Published var progress: Double = 0
+    @Published var duration: Double = 0
+    @Published var currentTime: Double = 0
     @Published var isPlaying = false
     @Published var gravity: AVLayerVideoGravity = .resizeAspectFill
     var onEnded: (() -> Void)?
@@ -61,6 +63,8 @@ final class FeedPlayerModel: ObservableObject {
         loading = true
         error = nil
         progress = 0
+        duration = 0
+        currentTime = 0
         isPlaying = false
         gravity = .resizeAspectFill
         ready = false
@@ -148,12 +152,28 @@ final class FeedPlayerModel: ObservableObject {
         let cur = time.seconds
         if dur.isFinite && dur > 0 {
             progress = min(max(cur / dur, 0), 1)
+            duration = dur
+            currentTime = cur
         }
         isPlaying = (player?.rate ?? 0) > 0
         if Date().timeIntervalSince(lastSave) >= 10 {
             lastSave = Date()
             Store.shared.saveProgress(epId: curEpId, time: cur)
         }
+    }
+
+    /// 快进/快退：拖动或点按进度条跳到指定位置；暂停时跳完仍暂停，播放中跳完继续播。
+    func seek(to fraction: Double) {
+        guard let p = player, let it = p.currentItem else { return }
+        let dur = it.duration.seconds
+        guard dur.isFinite && dur > 0 else { return }
+        let f = min(max(fraction, 0), 1)
+        let t = f * dur
+        progress = f
+        currentTime = t
+        p.seek(to: CMTime(seconds: t, preferredTimescale: 600),
+               toleranceBefore: .zero, toleranceAfter: .zero)
+        Store.shared.saveProgress(epId: curEpId, time: t)
     }
 
     private func handleEnded() {
