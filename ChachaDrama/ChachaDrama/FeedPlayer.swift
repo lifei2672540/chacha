@@ -52,6 +52,11 @@ final class FeedPlayerModel: ObservableObject {
     private var resolveTask: Task<Void, Never>?
     private var lastSave = Date.distantPast
     private var curEpId = ""
+    private var curDrama: Drama?
+    private var curSource: PySource?
+    private var curLineIdx = 0
+    private var curEpisode: DramaEpisode?
+    private var savedRate: Float = 1
     private var ready = false
 
     func load(drama: Drama, lines: [DramaLine], lineIdx: Int, episode: DramaEpisode, source: PySource, resumeFrom: Double) {
@@ -69,6 +74,10 @@ final class FeedPlayerModel: ObservableObject {
         gravity = .resizeAspectFill
         ready = false
         curEpId = episode.id
+        curDrama = drama
+        curSource = source
+        curLineIdx = lineIdx
+        curEpisode = episode
         resolveTask = Task { [weak self] in
             guard let self else { return }
             // 先试当前线路，之后按顺序试其余线路（不绕回，避免重复）
@@ -159,6 +168,9 @@ final class FeedPlayerModel: ObservableObject {
         if Date().timeIntervalSince(lastSave) >= 10 {
             lastSave = Date()
             Store.shared.saveProgress(epId: curEpId, time: cur)
+            if let d = curDrama, let e = curEpisode {
+                Store.shared.saveResume(drama: d, lineIdx: curLineIdx, episode: e, time: cur)
+            }
         }
     }
 
@@ -174,6 +186,38 @@ final class FeedPlayerModel: ObservableObject {
         p.seek(to: CMTime(seconds: t, preferredTimescale: 600),
                toleranceBefore: .zero, toleranceAfter: .zero)
         Store.shared.saveProgress(epId: curEpId, time: t)
+        if let d = curDrama, let e = curEpisode {
+            Store.shared.saveResume(drama: d, lineIdx: curLineIdx, episode: e, time: t)
+        }
+    }
+
+    /// 双击左右快进/快退固定秒数（到头或到尾就停住，不循环）。
+    func seekBy(seconds: Double) {
+        guard let p = player, let it = p.currentItem else { return }
+        let dur = it.duration.seconds
+        guard dur.isFinite && dur > 0 else { return }
+        let t = min(max(p.currentTime().seconds + seconds, 0), dur)
+        progress = t / dur
+        currentTime = t
+        p.seek(to: CMTime(seconds: t, preferredTimescale: 600),
+               toleranceBefore: .zero, toleranceAfter: .zero)
+        Store.shared.saveProgress(epId: curEpId, time: t)
+        if let d = curDrama, let e = curEpisode {
+            Store.shared.saveResume(drama: d, lineIdx: curLineIdx, episode: e, time: t)
+        }
+    }
+
+    /// 长按 2 倍速：按住时记下当前速率（暂停就是 0），松开恢复原速率。
+    func startFastForward() {
+        guard let p = player else { return }
+        savedRate = p.rate
+        p.rate = 2
+        isPlaying = true
+    }
+    func stopFastForward() {
+        guard let p = player else { return }
+        p.rate = savedRate
+        isPlaying = savedRate > 0
     }
 
     private func handleEnded() {
@@ -209,10 +253,16 @@ final class FeedPlayerModel: ObservableObject {
         }
         if !curEpId.isEmpty, let cur = player?.currentTime().seconds, cur > 0 {
             Store.shared.saveProgress(epId: curEpId, time: cur)
+            if let d = curDrama, let e = curEpisode {
+                Store.shared.saveResume(drama: d, lineIdx: curLineIdx, episode: e, time: cur)
+            }
         }
         player?.pause()
         player = nil
         item = nil
         ready = false
+        curDrama = nil
+        curSource = nil
+        curEpisode = nil
     }
 }
