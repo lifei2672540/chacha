@@ -91,6 +91,12 @@ jobs:
           SYSCONFIG=$(find py-support -name "_sysconfigdata__ios_arm64-iphoneos.py" 2>/dev/null | head -1)
           echo "sysconfig: ${SYSCONFIG:-none}"
           if [ -z "$SYSCONFIG" ]; then echo "CRYPTO_LXML: no 3.11 sysconfig found"; exit 0; fi
+          # sysconfig 里的编译器是 BeeWare 的包装器名（arm64-apple-ios-clang 等），
+          # 包装脚本就躺在支持包里，只是没在 PATH 上——不加 PATH 的话 pip wheel
+          # 报 "No such file or directory: 'arm64-apple-ios-clang"（1.0.7 就是死在这）。
+          export PATH="$PWD/py-support/Python.xcframework/ios-arm64/bin:$PATH"
+          export IPHONEOS_DEPLOYMENT_TARGET=13.0
+          which arm64-apple-ios-clang arm64-apple-ios-clang++ arm64-apple-ios-ar || true
           python3 -m venv venv-xbuild
           source venv-xbuild/bin/activate
           python -m pip install -q xbuild
