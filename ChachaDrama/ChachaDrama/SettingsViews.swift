@@ -86,7 +86,7 @@ struct SettingsView: View {
                     Text("内嵌 Python").font(.headline)
                     Text(PyRuntime.version).font(.caption).foregroundColor(.gray)
                         .lineLimit(2)
-                    Text("与 GHT63 iOS 同款 BeeWare 3.11 内嵌解释器；扩展模块受 AltStore 自签限制，见自检结果。")
+                    Text("与 GHT63 iOS 同款 BeeWare 3.11 内嵌解释器；扩展模块的加载情况见自检结果。")
                         .font(.caption).foregroundColor(.gray)
                 }
                 VStack(alignment: .leading, spacing: 8) {
@@ -116,9 +116,9 @@ struct SettingsView: View {
                         ShareLink(item: logText) { Text("分享") }.buttonStyle(.bordered)
                     }
                 }
-                Text("茶茶短剧 1.0.3（原生版）")
+                Text("茶茶短剧 1.0.4（原生版）")
                     .font(.caption).foregroundColor(.gray)
-                Text("说明：本版只接订阅里的 PY 源（CMS 源后续可加）；要 Crypto/lxml、或走 HTTPS 的源暂不可用——这是 AltStore 自签下扩展模块加载不了的限制，不是代码问题；蚂蚁那种正式签名的包不受此限。")
+                Text("说明：本版接订阅里的 PY 源与 CMS 源；要 Crypto/lxml 的源能不能跑，看上面自检里 Crypto.Cipher.AES / lxml.etree 两行（自签下扩展模块要转成框架才能加载）。")
                     .font(.caption).foregroundColor(.gray)
             }
             .padding()
@@ -143,7 +143,9 @@ struct SettingsView: View {
         do {
             let sources = try await PyAPI.subscription(url: Store.shared.subURL)
             PyAPI.clearScriptCache()
-            savedHint = "已刷新：当前接口共 \(sources.count) 个 PY 源，去剧场查看"
+            let py = sources.filter { !$0.isCMS }.count
+            let cms = sources.count - py
+            savedHint = "已刷新：当前接口共 \(sources.count) 个源（PY \(py) 个、CMS \(cms) 个），去剧场查看"
         } catch {
             savedHint = "刷新失败：\(firstLine("\(error)"))"
         }
@@ -162,7 +164,8 @@ struct SettingsView: View {
         testing = true
         defer { testing = false }
         var lines: [String] = []
-        for mod in ["_hashlib", "_sha2", "_sha256", "_ssl", "ssl", "math", "re", "_struct"] {
+        // 标准库扩展 + Crypto/lxml：后两行就是要 Crypto/lxml 的源能不能跑的答案。
+        for mod in ["_hashlib", "_sha2", "_sha256", "_ssl", "ssl", "math", "re", "_struct", "Crypto.Cipher.AES", "lxml.etree"] {
             do {
                 _ = try await PyAPI.runOffMain(code: probeScript(mod), ext: "", method: "home", argsJson: "[]")
                 lines.append("✓ \(mod)")
@@ -172,16 +175,33 @@ struct SettingsView: View {
         }
         do {
             let sources = try await PyAPI.subscription(url: Store.shared.subURL)
-            lines.append("订阅 PY 源 \(sources.count) 个")
+            let py = sources.filter { !$0.isCMS }.count
+            let cms = sources.count - py
+            lines.append("订阅 PY 源 \(py) 个、CMS 源 \(cms) 个")
             var tried = 0
             for s in sources where tried < 3 {
+                // CMS 源不用脚本，直接拉首页测；PY 源先看脚本是否要 Crypto/lxml。
+                if s.isCMS {
+                    tried += 1
+                    do {
+                        let (cls, list) = try await PyAPI.home(source: s)
+                        Store.shared.markSourceOK(s.api)
+                        lines.append("✓ \(s.displayName) [CMS]：分类 \(cls.count) 个、推荐 \(list.count) 条")
+                    } catch {
+                        Store.shared.markSourceFailed(s.api)
+                        lines.append("✗ \(s.displayName) [CMS]：\(firstLine("\(error)"))")
+                    }
+                    continue
+                }
                 let code = (try? await PyAPI.script(api: s.api)) ?? ""
                 if code.contains("Crypto") || code.contains("lxml") { continue }
                 tried += 1
                 do {
                     let (cls, list) = try await PyAPI.home(source: s)
+                    Store.shared.markSourceOK(s.api)
                     lines.append("✓ \(s.displayName)：分类 \(cls.count) 个、推荐 \(list.count) 条")
                 } catch {
+                    Store.shared.markSourceFailed(s.api)
                     lines.append("✗ \(s.displayName)：\(firstLine("\(error)"))")
                 }
             }
