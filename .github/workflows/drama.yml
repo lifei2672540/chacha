@@ -65,6 +65,50 @@ jobs:
           cp py-vend/x/certifi-2026.10.23/LICENSE app/licenses/certifi-LICENSE
           echo "so files: $(find app -name '*.so' | wc -l)"
           du -sh app
+      - name: Build Crypto and lxml for iOS (best effort)
+        working-directory: ChachaDrama
+        continue-on-error: true
+        run: |
+          set +e
+          # 第二步：要 Crypto/lxml 的源才能跑。没有现成配方，走 BeeWare xbuild 交叉编译
+          # （cibuildwheel 的 iOS 构建只支持 3.13/3.14，本项目是 3.11，此路不通）。
+          # 本步失败不影响主构建：没编出来的库，源照旧显示原因，不闪退。
+          echo "=== Crypto/lxml cross build (best effort) ==="
+          python3 -m pip install -q xbuild
+          mkdir -p py-vend/x-cross
+          python3 -m pip download --no-deps --no-binary :all: -d py-vend/sdists "pycryptodome==3.23.0" "lxml==6.0.0" -q
+          tar xzf py-vend/sdists/pycryptodome-3.23.0.tar.gz -C py-vend/x-cross
+          tar xzf py-vend/sdists/lxml-6.0.0.tar.gz -C py-vend/x-cross
+          ls py-vend/x-cross/
+          # 交叉 venv：优先用已下载的 BeeWare 3.11 构建做 sysconfig，否则让 xvenv 自己下载同源构建
+          SYSCONFIG=$(find py-support -name "_sysconfigdata__ios_arm64-iphoneos.py" 2>/dev/null | head -1)
+          echo "sysconfig: ${SYSCONFIG:-none}"
+          if [ -n "$SYSCONFIG" ]; then
+            xvenv --platform ios --arch arm64-iphoneos --sysconfig "$SYSCONFIG" x-venv || xvenv --platform ios --arch arm64-iphoneos x-venv
+          else
+            xvenv --platform ios --arch arm64-iphoneos x-venv
+          fi
+          if [ ! -d x-venv ]; then echo "CRYPTO_LXML: xvenv failed"; exit 0; fi
+          source x-venv/bin/activate || true
+          mkdir -p dist-cross
+          (cd dist-cross && xbuild ../py-vend/x-cross/pycryptodome-3.23.0 --platform ios --arch arm64-iphoneos) || echo "CRYPTO_LXML: pycryptodome xbuild failed"
+          # lxml 走静态依赖：iOS SDK 有 libxml2、无 libxslt，只能静态链接 libxml2+libxslt
+          (cd dist-cross && STATIC_DEPS=true xbuild ../py-vend/x-cross/lxml-6.0.0 --platform ios --arch arm64-iphoneos) || echo "CRYPTO_LXML: lxml xbuild failed"
+          deactivate || true
+          find dist-cross -name '*.whl' | sort
+          mkdir -p py-vend/cross
+          for w in $(find dist-cross -name '*.whl'); do unzip -o -q "$w" -d py-vend/cross; done
+          echo "cross .so files:"
+          find py-vend/cross -name '*.so' | sort
+          [ -d py-vend/cross/Crypto ] && cp -r py-vend/cross/Crypto app/Crypto
+          [ -d py-vend/cross/lxml ] && cp -r py-vend/cross/lxml app/lxml
+          # pycryptodome 的 .so 是 ctypes/cffi 按文件路径加载的，import 钩子覆盖不到；
+          # 打补丁让它先解析 .fwork 指针再 dlopen（补丁已在沙箱用真 3.23.0 源码验过）。
+          [ -f app/Crypto/Util/_raw_api.py ] && python3 scripts/patch_raw_api.py app/Crypto/Util/_raw_api.py
+          echo "CRYPTO_LXML: Crypto .so in app: $(find app/Crypto -name '*.so' 2>/dev/null | wc -l)"
+          echo "CRYPTO_LXML: lxml .so in app: $(find app/lxml -name '*.so' 2>/dev/null | wc -l)"
+          file app/Crypto/Cipher/_raw_aes.abi3.so 2>/dev/null || true
+          exit 0
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate project
@@ -122,10 +166,13 @@ jobs:
             rm "$so"
             count=$((count + 1))
           done
+          # Crypto/lxml 包内扩展：有就按同一套打法转框架（点分名防子包同名），
+          # 没编出来就跳过——best effort，失败不影响主流程。
+          python3 scripts/convert_pkg_modules.py "$APP" || echo "pkg convert skipped/failed"
           echo "converted $count modules to frameworks"
           echo "remaining .so in app: $(find "$APP" -name '*.so' | wc -l)"
           echo "frameworks in app: $(ls -d "$FWDIR"/*.framework | wc -l)"
-          echo "fwork pointers: $(ls "$DYNLIB"/*.fwork | wc -l)"
+          echo "fwork pointers: $(find "$APP" -name '*.fwork' | wc -l)"
           test "$count" -gt 0
       - name: Package IPA
         working-directory: ChachaDrama
