@@ -20,6 +20,8 @@ final class FeedViewModel: ObservableObject {
     @Published var loadingDrama = false
     @Published var dramaError: String?
     @Published var hint: String?
+    /// 推荐两种状态：false = 浏览（上下滑换一部随机短剧），true = 合集（上下滑换本剧各集）。
+    @Published var isBinge = false
     lazy var player = FeedPlayerModel()
 
     nonisolated init() {}
@@ -46,6 +48,8 @@ final class FeedViewModel: ObservableObject {
             for s in sources.prefix(3) {
                 do {
                     try await loadHome(source: s)
+                    // 首屏先播起来，后台再从另外 2 个源补剧进推荐池，不堵首屏。
+                    Task { await self.expandPool(excluding: s) }
                     return
                 } catch {
                     lastErr = "\(error)"
@@ -57,15 +61,51 @@ final class FeedViewModel: ObservableObject {
         }
     }
 
+    /// 加权打乱：源首页越靠前的剧（源自己排的热度顺序）越容易排在前面，
+    /// 但顺序是随机的；PY 数据里没有播放量，绝不编造热度数字。
+    static func weightedShuffle(_ list: [Drama]) -> [Drama] {
+        list.enumerated().map { (idx, d) in
+            (key: pow(Double.random(in: 0.0001...1), Double(idx + 1)), drama: d)
+        }
+        .sorted { $0.key > $1.key }
+        .map { $0.drama }
+    }
+
+    /// 后台扩池：再拉 2 个源的首页，按剧名去重后打乱追加到推荐池尾部。
+    /// 只在还在同一源的浏览模式时追加，避免用户已切源后混进旧源的剧。
+    private func expandPool(excluding okSource: PySource) async {
+        do {
+            let sources = try await PyAPI.subscription(url: Store.shared.subURL)
+            var extra: [Drama] = []
+            for s in sources.filter({ $0.api != okSource.api }).prefix(2) {
+                do {
+                    let (_, list) = try await PyAPI.home(source: s)
+                    extra += list
+                } catch { continue }
+                if extra.count >= 40 { break }
+            }
+            guard !extra.isEmpty, !isBinge, source?.api == okSource.api else { return }
+            let seen = Set(dramas.map { $0.name })
+            var fresh: [Drama] = []
+            for d in extra where !d.name.isEmpty && !seen.contains(d.name)
+                && !fresh.contains(where: { $0.name == d.name }) {
+                fresh.append(d)
+            }
+            if !fresh.isEmpty { dramas += Self.weightedShuffle(fresh) }
+        } catch { return }
+    }
+
     func loadHome(source: PySource) async throws {
         let (cls, list) = try await PyAPI.home(source: source)
         self.source = source
         classes = cls
-        dramas = list
+        // 推荐池按热度加权打乱：上下滑换的是随机短剧，不是按源顺序挨个播。
+        dramas = Self.weightedShuffle(list)
         dramaIdx = 0
         epIdx = 0
         lineIdx = 0
         detail = nil
+        isBinge = false
         await loadCurrent()
     }
 
@@ -118,38 +158,91 @@ final class FeedViewModel: ObservableObject {
                     source: d.source, resumeFrom: Store.shared.progress(for: ep.id))
     }
 
-    func next() {
-        if let det = detail, det.lines.indices.contains(lineIdx),
-           det.lines[lineIdx].episodes.indices.contains(epIdx + 1) {
-            epIdx += 1
-            playCurrent()
+    /// 点“合集”进入本剧：之后上下滑换本剧各集，不再换剧。
+    func enterBinge() {
+        guard let det = detail, !det.lines.isEmpty else {
+            showHint("该剧暂无播放线路")
             return
         }
+        isBinge = true
+        showHint("已进入合集，上下滑切换本剧各集")
+    }
+
+    /// 回到推荐浏览：上下滑重新换随机短剧。
+    func exitBinge() {
+        isBinge = false
+    }
+
+    /// 浏览模式下一部随机短剧；池子滑到底就重新加权打乱换一批。
+    private func browseNext() {
         if dramaIdx + 1 < dramas.count {
             dramaIdx += 1
             epIdx = 0
             lineIdx = 0
+            detail = nil
             Task { await loadCurrent() }
+        } else {
+            reshufflePool()
+        }
+    }
+
+    private func reshufflePool() {
+        guard !dramas.isEmpty else { return }
+        let current = currentDrama
+        var shuffled = Self.weightedShuffle(dramas)
+        if shuffled.first?.id == current?.id, shuffled.count > 1 {
+            shuffled.append(shuffled.removeFirst())
+        }
+        dramas = shuffled
+        dramaIdx = 0
+        epIdx = 0
+        lineIdx = 0
+        detail = nil
+        showHint("已为你换一批推荐")
+        Task { await loadCurrent() }
+    }
+
+    func next() {
+        if isBinge {
+            // 合集内：先换本剧下一集；到最后一集再上滑，回到推荐换下一部随机短剧。
+            guard let det = detail, !det.lines.isEmpty else {
+                showHint("该剧暂无播放线路")
+                return
+            }
+            if det.lines.indices.contains(lineIdx),
+               det.lines[lineIdx].episodes.indices.contains(epIdx + 1) {
+                epIdx += 1
+                playCurrent()
+                return
+            }
+            isBinge = false
+            browseNext()
             return
         }
-        showHint("已经是最后一集")
+        browseNext()
     }
 
     func prev() {
-        if epIdx > 0 {
-            epIdx -= 1
-            playCurrent()
+        if isBinge {
+            // 合集内：先换本剧上一集；已在第 1 集再下滑，回到推荐（还是这部剧的卡片）。
+            if epIdx > 0 {
+                epIdx -= 1
+                playCurrent()
+                return
+            }
+            isBinge = false
+            showHint("已返回推荐")
             return
         }
         if dramaIdx > 0 {
             dramaIdx -= 1
             epIdx = 0
             lineIdx = 0
-            gotoLast = true
+            detail = nil
             Task { await loadCurrent() }
             return
         }
-        showHint("已经是第一集")
+        showHint("已经是第一个推荐")
     }
 
     func jumpTo(drama: Drama, source: PySource, inList: [Drama]?) {
@@ -157,9 +250,13 @@ final class FeedViewModel: ObservableObject {
         if let list = inList, let idx = list.firstIndex(of: drama) {
             dramas = list
             dramaIdx = idx
+            // 从列表里挑的剧：浏览模式，上下滑换下一部剧；点合集再进本剧。
+            isBinge = false
         } else {
             dramas = [drama]
             dramaIdx = 0
+            // 单部剧（关注里点的）：直接进合集，上下滑换本剧各集。
+            isBinge = true
         }
         epIdx = 0
         lineIdx = 0
@@ -171,6 +268,8 @@ final class FeedViewModel: ObservableObject {
     func jumpToEpisode(_ idx: Int) {
         guard let det = detail, det.lines.indices.contains(lineIdx),
               det.lines[lineIdx].episodes.indices.contains(idx) else { return }
+        // 从选集页挑集 = 进本剧，之后上下滑换本剧各集。
+        isBinge = true
         epIdx = idx
         playCurrent()
     }
@@ -241,13 +340,23 @@ struct FeedView: View {
 
     private var topBar: some View {
         HStack {
-            Button(action: { tabSelection = 1 }) {
-                HStack(spacing: 4) {
-                    Image(systemName: "line.3.horizontal")
-                    Text(vm.source?.displayName ?? "换源").lineLimit(1)
+            if vm.isBinge {
+                Button(action: { vm.exitBinge() }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left")
+                        Text("推荐").lineLimit(1)
+                    }
                 }
+                .foregroundColor(.white)
+            } else {
+                Button(action: { tabSelection = 1 }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "line.3.horizontal")
+                        Text(vm.source?.displayName ?? "换源").lineLimit(1)
+                    }
+                }
+                .foregroundColor(.white)
             }
-            .foregroundColor(.white)
             Spacer()
             HStack(spacing: 20) {
                 ForEach(TopTab.allCases, id: \.self) { t in
@@ -393,7 +502,11 @@ struct FeedCell: View {
                         Text(det.remarks).font(.caption)
                             .foregroundColor(.white.opacity(0.8)).lineLimit(1)
                     }
-                    Button(action: { showEpisodeSheet = true }) {
+                    Button(action: {
+                        // 浏览时点合集 = 进入本剧（之后上下滑换本剧各集）；
+                        // 已在合集里再点 = 打开选集页挑集。
+                        if vm.isBinge { showEpisodeSheet = true } else { vm.enterBinge() }
+                    }) {
                         HStack(spacing: 4) {
                             Text("合集 · 更新至\(vm.detail?.lines.first?.episodes.count ?? 0)集")
                             Image(systemName: "chevron.right").font(.caption)
