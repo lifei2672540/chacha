@@ -424,9 +424,11 @@ struct FeedCell: View {
     @Binding var showEpisodeSheet: Bool
     @ObservedObject var store = Store.shared
     @State private var showPaused = false
+    /// 正在拖进度条时的目标位置（0...1），松手后调用 player.seek。
+    @State private var seekFraction: Double?
 
     var body: some View {
-        GeometryReader { geo in
+        GeometryReader { _ in
             ZStack {
                 PlayerLayerView(player: player.player, gravity: player.gravity)
                     .ignoresSafeArea()
@@ -519,14 +521,36 @@ struct FeedCell: View {
                 .padding(.horizontal, 16)
                 .padding(.bottom, 24)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-                // 进度条（贴着安全区底部，即 Tab 栏上方）
-                VStack {
+                // 进度条（可拖动/点按快进快退）：拖动时显示目标时间，松手跳到该位置。
+                VStack(spacing: 4) {
                     Spacer()
-                    ZStack(alignment: .leading) {
-                        Rectangle().fill(Color.white.opacity(0.3)).frame(height: 3)
-                        Rectangle().fill(Color.orange)
-                            .frame(width: geo.size.width * player.progress, height: 3)
+                    if let f = seekFraction, player.duration > 0 {
+                        Text("\(formatTime(f * player.duration)) / \(formatTime(player.duration))")
+                            .font(.caption).foregroundColor(.white)
+                            .padding(.horizontal, 8).padding(.vertical, 4)
+                            .background(Color.black.opacity(0.7)).cornerRadius(6)
                     }
+                    GeometryReader { barGeo in
+                        ZStack(alignment: .leading) {
+                            Rectangle().fill(Color.white.opacity(0.3)).frame(height: 4)
+                            Rectangle().fill(Color.orange)
+                                .frame(width: barGeo.size.width * (seekFraction ?? player.progress), height: 4)
+                        }
+                        .frame(height: 28)
+                        .contentShape(Rectangle())
+                        .gesture(
+                            DragGesture(minimumDistance: 0)
+                                .onChanged { v in
+                                    seekFraction = min(max(v.location.x / barGeo.size.width, 0), 1)
+                                }
+                                .onEnded { v in
+                                    let f = min(max(v.location.x / barGeo.size.width, 0), 1)
+                                    player.seek(to: f)
+                                    seekFraction = nil
+                                }
+                        )
+                    }
+                    .frame(height: 28)
                 }
                 // 加载 / 失败
                 if player.loading {
@@ -554,6 +578,12 @@ struct FeedCell: View {
                     }
                 }
         )
+    }
+
+    private func formatTime(_ s: Double) -> String {
+        guard s.isFinite, s >= 0 else { return "0:00" }
+        let i = Int(s)
+        return "\(i / 60):\(String(format: "%02d", i % 60))"
     }
 }
 
