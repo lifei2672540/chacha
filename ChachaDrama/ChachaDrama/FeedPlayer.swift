@@ -30,6 +30,15 @@ struct PlayerLayerView: UIViewRepresentable {
     }
 }
 
+/// 转屏：全屏横屏视频时转到横屏，退出全屏时转回竖屏。
+/// App 已在 Info.plist 声明支持横屏，setValue 是 iOS 上通用的转屏做法。
+enum ScreenRotation {
+    static func rotate(to orientation: UIInterfaceOrientation) {
+        UIDevice.current.setValue(orientation.rawValue, forKey: "orientation")
+        UIViewController.attemptRotationToDeviceOrientation()
+    }
+}
+
 /// Feed 播放器：PY 解析 → AVPlayer，线路按顺序自动试，全部失败才报原因。
 /// 看门狗 15 秒；播完回调 onEnded（Feed 切下一条）；进度每 10 秒存一次本机续播。
 @MainActor
