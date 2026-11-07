@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// 首页顶部档位（截图顺序）：关注 = 本机关注的剧；漫剧 = 源内分类浏览；推荐 = 竖屏 Feed；继续 = 本机继续观看。
 enum TopTab: String, CaseIterable {
@@ -458,6 +459,8 @@ struct FeedCell: View {
     @State private var fastForward = false
     @State private var suppressTap = false
     @State private var flashTask: Task<Void, Never>?
+    /// 全屏播放开关：弹出全屏播放页（同一 AVPlayer 换一层铺满），退出时转回竖屏。
+    @State private var isFullScreen = false
 
     /// 左右两半屏的手势区：单击暂停/续播，双击左右快进/快退 10 秒，长按 2 倍速。
     /// 单击和双击都挂在同一半屏上，系统自己区分；长按松手后屏蔽一次单击，防误暂停。
@@ -634,6 +637,21 @@ struct FeedCell: View {
                     }
                     .frame(height: 28)
                 }
+                // 全屏按钮（有视频且无报错时才显示）：点进全屏，横屏视频自动转横屏铺满，竖屏视频保持竖屏铺满。
+                if player.player != nil && player.error == nil {
+                    Button(action: { isFullScreen = true }) {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            .font(.system(size: 20))
+                            .foregroundColor(.white)
+                            .padding(8)
+                            .background(Color.black.opacity(0.5))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .padding(.trailing, 16)
+                    .padding(.bottom, 44)
+                }
                 // 加载 / 失败
                 if player.loading {
                     ProgressView().tint(.white)
@@ -660,6 +678,135 @@ struct FeedCell: View {
                     }
                 }
         )
+        .fullScreenCover(isPresented: $isFullScreen) {
+            FullScreenPlayerView(vm: vm, player: player)
+        }
+    }
+
+    private func formatTime(_ s: Double) -> String {
+        guard s.isFinite, s >= 0 else { return "0:00" }
+        let i = Int(s)
+        return "\(i / 60):\(String(format: "%02d", i % 60))"
+    }
+}
+
+// MARK: - 全屏播放：同一 AVPlayer 换一层铺满全屏；横屏视频进全屏自动转横屏，退出转回竖屏。
+// 点视频空白处显隐控制条（播放中 3 秒无操作自动隐藏）；播完自动下一条时全屏页跟着换，不退出。
+
+struct FullScreenPlayerView: View {
+    @ObservedObject var vm: FeedViewModel
+    @ObservedObject var player: FeedPlayerModel
+    @Environment(\.dismiss) var dismiss
+    @State private var showControls = true
+    @State private var seekFraction: Double?
+    @State private var hideTask: Task<Void, Never>?
+
+    var body: some View {
+        ZStack {
+            PlayerLayerView(player: player.player, gravity: .resizeAspectFill)
+                .ignoresSafeArea()
+                .onTapGesture { toggleControls() }
+            if showControls {
+                VStack(spacing: 0) {
+                    // 顶部：剧名/集数 + 退出全屏
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(vm.currentDrama?.name ?? "")
+                                .font(.headline).bold().foregroundColor(.white).lineLimit(1)
+                            if let ep = vm.currentEpisode {
+                                Text("第\(ep.index + 1)集 | \(ep.title)")
+                                    .font(.subheadline).foregroundColor(.white.opacity(0.8)).lineLimit(1)
+                            }
+                        }
+                        Spacer()
+                        Button(action: { dismiss() }) {
+                            Image(systemName: "arrow.down.right.and.arrow.up.left")
+                                .font(.system(size: 20)).foregroundColor(.white)
+                                .padding(8).background(Color.black.opacity(0.5)).clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    Spacer()
+                    // 中间：播放/暂停
+                    Button(action: { player.togglePlay() }) {
+                        Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 56)).foregroundColor(.white.opacity(0.9))
+                    }
+                    .buttonStyle(.plain)
+                    Spacer()
+                    // 底部：快退 10 秒 / 时间 / 快进 10 秒 + 可拖进度条
+                    VStack(spacing: 10) {
+                        HStack(spacing: 20) {
+                            Button(action: { player.seekBy(seconds: -10) }) {
+                                Image(systemName: "gobackward.10")
+                                    .font(.system(size: 26)).foregroundColor(.white)
+                            }
+                            .buttonStyle(.plain)
+                            Spacer()
+                            Text("\(formatTime(player.currentTime)) / \(formatTime(player.duration))")
+                                .font(.caption).foregroundColor(.white)
+                            Spacer()
+                            Button(action: { player.seekBy(seconds: 10) }) {
+                                Image(systemName: "goforward.10")
+                                    .font(.system(size: 26)).foregroundColor(.white)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        GeometryReader { barGeo in
+                            ZStack(alignment: .leading) {
+                                Rectangle().fill(Color.white.opacity(0.3)).frame(height: 4)
+                                Rectangle().fill(Color.orange)
+                                    .frame(width: barGeo.size.width * (seekFraction ?? player.progress), height: 4)
+                            }
+                            .frame(height: 28)
+                            .contentShape(Rectangle())
+                            .gesture(
+                                DragGesture(minimumDistance: 0)
+                                    .onChanged { v in
+                                        seekFraction = min(max(v.location.x / barGeo.size.width, 0), 1)
+                                    }
+                                    .onEnded { v in
+                                        let f = min(max(v.location.x / barGeo.size.width, 0), 1)
+                                        player.seek(to: f)
+                                        seekFraction = nil
+                                    }
+                            )
+                        }
+                        .frame(height: 28)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 24)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .background(Color.black)
+        .onAppear {
+            // 横屏视频（Feed 里是完整显示、带黑边的那个）进全屏转横屏铺满；竖屏视频保持竖屏铺满。
+            if player.gravity == .resizeAspect {
+                ScreenRotation.rotate(to: .landscapeRight)
+            }
+            scheduleHide()
+        }
+        .onDisappear {
+            hideTask?.cancel()
+            ScreenRotation.rotate(to: .portrait)
+        }
+    }
+
+    private func toggleControls() {
+        showControls.toggle()
+        if showControls { scheduleHide() } else { hideTask?.cancel() }
+    }
+
+    private func scheduleHide() {
+        hideTask?.cancel()
+        hideTask = Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            if !Task.isCancelled, player.isPlaying { showControls = false }
+        }
     }
 
     private func formatTime(_ s: Double) -> String {
