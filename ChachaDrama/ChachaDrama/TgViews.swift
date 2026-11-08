@@ -756,6 +756,9 @@ struct TgPlayerView: View {
         ZStack {
             PlayerLayerView(player: model.player, gravity: model.gravity)
                 .ignoresSafeArea()
+            // 点按层：盖在视频上、控制条下，点空白处显隐控制条；控制条上的按钮自己响应，不会误触。
+            Color.clear
+                .contentShape(Rectangle())
                 .onTapGesture { toggleControls() }
             if showControls {
                 VStack(spacing: 0) {
@@ -801,7 +804,7 @@ struct TgPlayerView: View {
                             Button("返回") { dismiss() }.buttonStyle(.bordered)
                         }
                         HStack(spacing: 20) {
-                            Button(action: { model.seekBy(seconds: -10) }) {
+                            Button(action: { model.seekBy(seconds: -10); scheduleHide() }) {
                                 Image(systemName: "gobackward.10")
                                     .font(.system(size: 26)).foregroundColor(.white)
                             }
@@ -810,7 +813,7 @@ struct TgPlayerView: View {
                             Text("\(tgFormatTime(model.currentTime)) / \(tgFormatTime(model.duration))")
                                 .font(.caption).foregroundColor(.white)
                             Spacer()
-                            Button(action: { model.seekBy(seconds: 10) }) {
+                            Button(action: { model.seekBy(seconds: 10); scheduleHide() }) {
                                 Image(systemName: "goforward.10")
                                     .font(.system(size: 26)).foregroundColor(.white)
                             }
@@ -833,6 +836,7 @@ struct TgPlayerView: View {
                                         let f = min(max(v.location.x / barGeo.size.width, 0), 1)
                                         model.seek(to: f)
                                         seekFraction = nil
+                                        scheduleHide()
                                     }
                             )
                         }
@@ -856,11 +860,13 @@ struct TgPlayerView: View {
             model.load(episodes: episodes, index: index, showId: showId, showName: showName, cover: cover)
             scheduleHide()
         }
-        .onChange(of: model.gravity) { g in
+        .onChange(of: model.isLandscape) { landscape in
             // 横屏视频进播自动转横屏铺满，竖屏保持竖屏铺满；退出时转回竖屏。
-            if g == .resizeAspect {
-                ScreenRotation.rotate(to: .landscapeRight)
-            }
+            ScreenRotation.rotate(to: landscape ? .landscapeRight : .portrait)
+        }
+        // 暂停时留着控制条，恢复播放 3 秒后再藏。
+        .onChange(of: model.isPlaying) { playing in
+            if playing { scheduleHide() } else { hideTask?.cancel() }
         }
         .onDisappear {
             hideTask?.cancel()
@@ -874,11 +880,19 @@ struct TgPlayerView: View {
         if showControls { scheduleHide() } else { hideTask?.cancel() }
     }
 
+    /// 3 秒无操作自动藏控制条：没播（暂停/缓冲）就一直等，播了再等 3 秒藏；
+    /// 一次性的检查不可靠（正好卡在暂停那一刻就永远不藏了），所以循环等。
     private func scheduleHide() {
         hideTask?.cancel()
         hideTask = Task {
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
-            if !Task.isCancelled, model.isPlaying { showControls = false }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                if Task.isCancelled { return }
+                if model.isPlaying {
+                    showControls = false
+                    return
+                }
+            }
         }
     }
 }
