@@ -137,15 +137,16 @@ final class Store: ObservableObject {
         get { UserDefaults.standard.string(forKey: "tmdbLanguage") ?? "zh-CN" }
         set { UserDefaults.standard.set(newValue, forKey: "tmdbLanguage") }
     }
-    func tmdbCacheGet(_ key: String) -> (String, String)? {
+    func tmdbCacheGet(_ key: String) -> (String, String, Double)? {
         let d = UserDefaults.standard.dictionary(forKey: "tmdbCache") as? [String: [String]] ?? [:]
         guard let v = d[key], v.count >= 2 else { return nil }
-        return (v[0], v[1])
+        // 旧缓存只有两项（无评分），读不到评分就当 0，不清缓存。
+        return (v[0], v[1], v.count >= 3 ? Double(v[2]) ?? 0 : 0)
     }
-    func tmdbCachePut(_ key: String, poster: String, backdrop: String) {
+    func tmdbCachePut(_ key: String, poster: String, backdrop: String, score: Double) {
         var d = UserDefaults.standard.dictionary(forKey: "tmdbCache") as? [String: [String]] ?? [:]
         if d.count > 500 { d = [:] }
-        d[key] = [poster, backdrop]
+        d[key] = [poster, backdrop, String(score)]
         UserDefaults.standard.set(d, forKey: "tmdbCache")
     }
     func tmdbCacheClear() { UserDefaults.standard.removeObject(forKey: "tmdbCache") }
