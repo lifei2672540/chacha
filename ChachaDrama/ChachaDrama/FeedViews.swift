@@ -706,8 +706,12 @@ struct FullScreenPlayerView: View {
 
     var body: some View {
         ZStack {
-            PlayerLayerView(player: player.player, gravity: .resizeAspectFill)
+            // 全屏画面一律完整显示（不裁切）：竖屏视频竖屏铺满、横屏视频转横屏后铺满，都不超出屏幕。
+            PlayerLayerView(player: player.player, gravity: .resizeAspect)
                 .ignoresSafeArea()
+            // 全屏点按层：盖在视频上、控制条下，点空白处显隐控制条；控制条上的按钮自己响应，不会误触。
+            Color.clear
+                .contentShape(Rectangle())
                 .onTapGesture { toggleControls() }
             if showControls {
                 VStack(spacing: 0) {
@@ -742,7 +746,7 @@ struct FullScreenPlayerView: View {
                     // 底部：快退 10 秒 / 时间 / 快进 10 秒 + 可拖进度条
                     VStack(spacing: 10) {
                         HStack(spacing: 20) {
-                            Button(action: { player.seekBy(seconds: -10) }) {
+                            Button(action: { player.seekBy(seconds: -10); scheduleHide() }) {
                                 Image(systemName: "gobackward.10")
                                     .font(.system(size: 26)).foregroundColor(.white)
                             }
@@ -751,7 +755,7 @@ struct FullScreenPlayerView: View {
                             Text("\(formatTime(player.currentTime)) / \(formatTime(player.duration))")
                                 .font(.caption).foregroundColor(.white)
                             Spacer()
-                            Button(action: { player.seekBy(seconds: 10) }) {
+                            Button(action: { player.seekBy(seconds: 10); scheduleHide() }) {
                                 Image(systemName: "goforward.10")
                                     .font(.system(size: 26)).foregroundColor(.white)
                             }
@@ -774,6 +778,7 @@ struct FullScreenPlayerView: View {
                                         let f = min(max(v.location.x / barGeo.size.width, 0), 1)
                                         player.seek(to: f)
                                         seekFraction = nil
+                                        scheduleHide()
                                     }
                             )
                         }
@@ -787,11 +792,14 @@ struct FullScreenPlayerView: View {
         }
         .background(Color.black)
         .onAppear {
-            // 横屏视频（Feed 里是完整显示、带黑边的那个）进全屏转横屏铺满；竖屏视频保持竖屏铺满。
-            if player.gravity == .resizeAspect {
-                ScreenRotation.rotate(to: .landscapeRight)
-            }
+            applyRotation()
             scheduleHide()
+        }
+        // 视频方向变了就跟着转：进全屏时视频还没就绪、播完换了不同方向的下一条，都会转。
+        .onChange(of: player.isLandscape) { _ in applyRotation() }
+        // 暂停时留着控制条，恢复播放 3 秒后再藏。
+        .onChange(of: player.isPlaying) { playing in
+            if playing { scheduleHide() } else { hideTask?.cancel() }
         }
         .onDisappear {
             hideTask?.cancel()
@@ -799,16 +807,29 @@ struct FullScreenPlayerView: View {
         }
     }
 
+    /// 按当前视频方向转屏：横屏视频转横屏，竖屏视频转回竖屏。
+    private func applyRotation() {
+        ScreenRotation.rotate(to: player.isLandscape ? .landscapeRight : .portrait)
+    }
+
     private func toggleControls() {
         showControls.toggle()
         if showControls { scheduleHide() } else { hideTask?.cancel() }
     }
 
+    /// 3 秒无操作自动藏控制条：没播（暂停/缓冲）就一直等，播了再等 3 秒藏；
+    /// 一次性的检查不可靠（正好卡在暂停那一刻就永远不藏了），所以循环等。
     private func scheduleHide() {
         hideTask?.cancel()
         hideTask = Task {
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
-            if !Task.isCancelled, player.isPlaying { showControls = false }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                if Task.isCancelled { return }
+                if player.isPlaying {
+                    showControls = false
+                    return
+                }
+            }
         }
     }
 
