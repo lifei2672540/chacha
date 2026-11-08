@@ -22,18 +22,28 @@ struct GHT63App: App {
         WindowGroup {
             TabView(selection: $tabNav.selected) {
                 HomeView()
+                    .toolbar(.hidden, for: .tabBar)
+                    .preferredColorScheme(.dark)
                     .tabItem { Label("首页", systemImage: "house") }
                     .tag(0)
                 SearchView()
+                    .toolbar(.hidden, for: .tabBar)
+                    .preferredColorScheme(.dark)
                     .tabItem { Label("搜索", systemImage: "magnifyingglass") }
                     .tag(1)
                 SitesView()
+                    .toolbar(.hidden, for: .tabBar)
+                    .preferredColorScheme(.dark)
                     .tabItem { Label("采集站", systemImage: "antenna.radiowaves.left.and.right") }
                     .tag(2)
                 EmbyView()
+                    .toolbar(.hidden, for: .tabBar)
+                    .preferredColorScheme(.dark)
                     .tabItem { Label("Emby", systemImage: "play.rectangle") }
                     .tag(3)
                 SettingsView()
+                    .toolbar(.hidden, for: .tabBar)
+                    .preferredColorScheme(.light)
                     .tabItem { Label("设置", systemImage: "gear") }
                     .tag(4)
             }
@@ -41,16 +51,18 @@ struct GHT63App: App {
             .environmentObject(tabNav)
             // 系统底栏藏掉，改用悬浮玻璃底栏（蚂蚁 2.0.6 同款）；TabView 本身留着，
             // 各 tab 的导航状态照常保留，切 tab 不会丢正在看的详情页。
-            .toolbar(.hidden, for: .tabBar)
+            // 注意：藏底栏与深浅色必须写在每个 tab 上 —— 写在 TabView 上不生效，
+            // 1.3.0 就是这么漏的：底栏旧标签露在玻璃条下面，设置页的状态栏还是白字。
             // 给玻璃底栏留空，别盖住内容。
             .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 76) }
             .overlay(alignment: .bottom) {
                 GlassTabBar(selected: $tabNav.selected)
                     .padding(.horizontal, 16)
                     .padding(.bottom, 10)
+                    // 玻璃条固定深色：不管切到哪个 tab（设置页是浅色），白字图标都看得见。
+                    .preferredColorScheme(.dark)
             }
             // 视频 App 惯用深色 + 红色强调，不再是默认白底 demo 样
-            .preferredColorScheme(.dark)
             .tint(.red)
         }
     }
