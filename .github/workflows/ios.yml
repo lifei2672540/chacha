@@ -17,7 +17,9 @@ jobs:
           # 定死 3.11 最新 tag，不调 GitHub API（CI 上曾撞未登录限流导致解析失败）
           ASSET="https://github.com/beeware/python-apple-support/releases/download/3.11-b13/Python-3.11-iOS-support.b13.tar.gz"
           echo "Asset: $ASSET"
-          curl -fL -o python-ios.tar.gz "$ASSET"
+          # 下载失败会 504/56：curl 自带重试（5 次、间隔 10 秒），别让一次闪断杀掉整个构建
+          # （2026-11-08：#79 与 #83 都死在这一步，第一次重跑成、第二次两次都死）
+          curl -fL --retry 5 --retry-delay 10 --retry-all-errors -o python-ios.tar.gz "$ASSET"
           mkdir -p py-support && tar xzf python-ios.tar.gz -C py-support
           echo "--- layout ---"
           find py-support -maxdepth 4 | head -60
