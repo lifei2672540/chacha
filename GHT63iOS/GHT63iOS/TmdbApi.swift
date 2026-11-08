@@ -19,7 +19,7 @@ enum TmdbApi {
         return b.isEmpty ? "http://images.tmdb.org/t/p" : b
     }
 
-    static func lookup(title: String, year: String) async -> (poster: String, backdrop: String)? {
+    static func lookup(title: String, year: String) async -> (poster: String, backdrop: String, score: Double)? {
         guard await Store.shared.tmdbEnabled else { return nil }
         let key = await Store.shared.tmdbKey
         guard !key.isEmpty else { return nil }
@@ -31,7 +31,7 @@ enum TmdbApi {
         guard let found = await search(title: title, year: year, key: key, apiBase: apiBase, imgBase: imgBase, lang: lang) else {
             return nil
         }
-        await Store.shared.tmdbCachePut(cacheKey, poster: found.0, backdrop: found.1)
+        await Store.shared.tmdbCachePut(cacheKey, poster: found.0, backdrop: found.1, score: found.2)
         return found
     }
 
@@ -49,7 +49,7 @@ enum TmdbApi {
         return "连接失败：检查 API 地址和 Key 是否正确"
     }
 
-    private static func search(title: String, year: String, key: String, apiBase: String, imgBase: String, lang: String) async -> (String, String)? {
+    private static func search(title: String, year: String, key: String, apiBase: String, imgBase: String, lang: String) async -> (String, String, Double)? {
         var comps = URLComponents(string: apiRoot(base: apiBase) + "/search/multi")
         guard comps != nil else { return nil }
         comps!.queryItems = [
@@ -65,19 +65,20 @@ enum TmdbApi {
             let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
             let results = (root["results"] as? [[String: Any]]) ?? []
             let img = imageRoot(base: imgBase)
-            var firstWithBackdrop: (String, String)?
-            var firstWithPoster: (String, String)?
+            var firstWithBackdrop: (String, String, Double)?
+            var firstWithPoster: (String, String, Double)?
             for r in results {
                 let poster = (r["poster_path"] as? String).map { "\(img)/w500\($0)" } ?? ""
                 let backdrop = (r["backdrop_path"] as? String).map { "\(img)/w1280\($0)" } ?? ""
+                let score = (r["vote_average"] as? Double) ?? 0
                 let date = (r["release_date"] as? String ?? r["first_air_date"] as? String ?? "")
-                if firstWithBackdrop == nil && !backdrop.isEmpty { firstWithBackdrop = (poster, backdrop) }
-                if firstWithPoster == nil && !poster.isEmpty { firstWithPoster = (poster, backdrop) }
+                if firstWithBackdrop == nil && !backdrop.isEmpty { firstWithBackdrop = (poster, backdrop, score) }
+                if firstWithPoster == nil && !poster.isEmpty { firstWithPoster = (poster, backdrop, score) }
                 if !year.isEmpty && date.hasPrefix(year) && !backdrop.isEmpty {
-                    return (poster, backdrop)
+                    return (poster, backdrop, score)
                 }
             }
-            return firstWithBackdrop ?? firstWithPoster ?? ("", "")
+            return firstWithBackdrop ?? firstWithPoster ?? ("", "", 0)
         } catch {
             return nil
         }
