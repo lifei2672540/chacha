@@ -119,6 +119,12 @@ actor TGProgressiveStore {
         return try read(effective)
     }
 
+    /// Remove a finished prefetch entry. The prefetch task runs outside the
+    /// actor, so it calls this isolated method (the compiler requires it).
+    private func _prefetchDone(_ start: Int) {
+        prefetching.remove(start)
+    }
+
     /// Fetch the next `prefetchCount` segments past `offset` concurrently,
     /// so the download runs ahead of playback. Failures are swallowed:
     /// the on-demand fetch retries the segment later.
@@ -138,7 +144,7 @@ actor TGProgressiveStore {
                     } catch {
                         // Prefetch failure is not fatal; on-demand fetch retries later.
                     }
-                    self.prefetching.remove(segStart)
+                    await self._prefetchDone(segStart)
                 }
                 n += 1
             }
