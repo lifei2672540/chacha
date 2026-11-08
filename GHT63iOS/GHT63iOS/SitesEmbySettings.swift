@@ -202,7 +202,6 @@ struct EmbyView: View {
 struct SettingsView: View {
     @AppStorage("serverBase") private var serverBase = "http://test.lifei555.cloudns.be/点播"
     @AppStorage("tgBase") private var tgBase = "http://192.168.31.254:8899"
-    @State private var tmdbKey = ""
     @State private var embyServer = ""
     @State private var embyUser = ""
     @State private var embyPw = ""
@@ -210,9 +209,27 @@ struct SettingsView: View {
     @State private var pyTestResult = "还没跑过"
     @State private var logUploadResult = ""
 
+    /// 浅色分组底（蚂蚁 2.0.6 设置页同款米色）。
+    private let cream = Color(red: 0.96, green: 0.95, blue: 0.92)
+
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    NavigationLink(destination: ViewingExperienceView()) {
+                        HStack(spacing: 12) {
+                            Image(systemName: "slider.horizontal.3")
+                                .font(.system(size: 20)).foregroundColor(.green)
+                                .frame(width: 36, height: 36)
+                                .background(Color.green.opacity(0.12)).cornerRadius(10)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("观看体验").font(.headline)
+                                Text("调整影视界面、TMDB 资料及播放行为")
+                                    .font(.caption).foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                }
                 Section("服务器（不要带 /index.html）") {
                     TextField("服务器地址", text: $serverBase)
                         .autocapitalization(.none).disableAutocorrection(true)
@@ -222,17 +239,6 @@ struct SettingsView: View {
                         .autocapitalization(.none).disableAutocorrection(true)
                     Text("默认软路由 192.168.31.254:8899，改了端口或 IP 后在这里改。")
                         .font(.caption).foregroundColor(.secondary)
-                }
-                Section("TMDB（自己的 Key，themoviedb.org 免费注册）") {
-                    SecureField("TMDB v3 Key", text: $tmdbKey)
-                    Button("保存 Key（同时清掉旧缓存）") {
-                        Store.shared.tmdbKey = tmdbKey
-                        savedNote = "TMDB Key 已保存"
-                    }
-                    Button("清除 TMDB 缓存") {
-                        Store.shared.tmdbCacheClear()
-                        savedNote = "TMDB 缓存已清除"
-                    }
                 }
                 Section("Emby（只存本机，不写进代码）") {
                     TextField("服务器", text: $embyServer)
@@ -270,19 +276,22 @@ struct SettingsView: View {
                 Section {
                     Text("端侧 PY 正在接入：解释器与蜘蛛桥已就绪，订阅浏览界面下一阶段来；Jar 不在 iOS 路线内。")
                         .font(.caption).foregroundColor(.secondary)
-                    Text("茶茶点播 iOS 1.2.9（原生版）").font(.caption).foregroundColor(.secondary)
+                    Text("茶茶点播 iOS 1.3.0（原生版）").font(.caption).foregroundColor(.secondary)
                     Text("内嵌 Python：\(PyRuntime.version)").font(.caption).foregroundColor(.secondary)
                     if !savedNote.isEmpty { Text(savedNote).font(.caption).foregroundColor(.green) }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(cream)
             .navigationTitle("设置")
             .onAppear {
-                tmdbKey = Store.shared.tmdbKey
                 embyServer = EmbyApi.server
                 embyUser = EmbyApi.username
                 embyPw = EmbyApi.password
             }
         }
+        // 设置页是浅色分组样式（首页仍是深色）。
+        .preferredColorScheme(.light)
     }
 
     // MARK: - PY 自检（阶段 2 验收：订阅拉取 + 首个 PY 源的 homeContent）
@@ -395,6 +404,177 @@ class Spider:
                 ErrorLog.append("PY 自检失败：\(msg)")
                 await MainActor.run { pyTestResult = "自检失败：\(msg)" }
             }
+        }
+    }
+}
+
+/// 观看体验（蚂蚁 2.0.6 设置页同款分组）：新版影视界面开关、TMDB 资料配置、视频设置。
+/// 弹幕、广告过滤、深度嗅探、M3U8 边下边播这几行蚂蚁有、我们没有：没弹幕通道、
+/// 没嗅探线路（线路都来自 PY/CMS 接口）、TG 早已是边下边播 —— 不放假开关。
+struct ViewingExperienceView: View {
+    @AppStorage("newHomeUI") private var newHomeUI = true
+    @AppStorage("detailPosterBackdrop") private var detailPosterBackdrop = true
+    private let cream = Color(red: 0.96, green: 0.95, blue: 0.92)
+
+    var body: some View {
+        Form {
+            Section {
+                HStack(spacing: 12) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 20)).foregroundColor(.green)
+                        .frame(width: 36, height: 36)
+                        .background(Color.green.opacity(0.12)).cornerRadius(10)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("观看体验").font(.headline)
+                        Text("调整影视界面、TMDB 资料及播放行为")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                }
+            }
+            Section {
+                Toggle(isOn: $newHomeUI) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("新版影视界面")
+                        Text("沉浸式首页与详情、海报背景和玻璃控件；关闭恢复旧版")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                }
+                NavigationLink(destination: TmdbConfigView()) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "film")
+                            .font(.system(size: 20)).foregroundColor(.green)
+                            .frame(width: 36, height: 36)
+                            .background(Color.green.opacity(0.12)).cornerRadius(10)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("TMDB 资料配置")
+                            Text("设置影片资料的来源和匹配规则")
+                                .font(.caption).foregroundColor(.secondary)
+                        }
+                    }
+                }
+            }
+            Section(header: Text("视频设置")) {
+                Toggle(isOn: $detailPosterBackdrop) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("详情页海报背景")
+                        Text("用影视海报作为详情页背景，关闭后使用默认主题背景")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                }
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .background(cream)
+        .navigationTitle("观看体验")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+/// TMDB 资料配置（蚂蚁 2.0.6 同款页）：开关、卡片匹配、地址、Key、语言、保存、测试连接。
+/// Key 是你自己的（themoviedb.org 免费注册），只存本机；不配 Key 时全用接口自带资料。
+struct TmdbConfigView: View {
+    @AppStorage("tmdbEnabled") private var tmdbEnabled = true
+    @AppStorage("tmdbMatchCards") private var tmdbMatchCards = false
+    @State private var apiBase = ""
+    @State private var imageBase = ""
+    @State private var apiKey = ""
+    @State private var language = ""
+    @State private var showKey = false
+    @State private var note = ""
+    @State private var testing = false
+    private let cream = Color(red: 0.96, green: 0.95, blue: 0.92)
+
+    var body: some View {
+        Form {
+            Section {
+                Text("海报、背景、剧情与剧集预览\n优先展示 TMDB 匹配资料；未匹配或连接失败时使用接口信息。播放线路仍由影视接口提供。")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+            Section {
+                Toggle("启用 TMDB 资料", isOn: $tmdbEnabled)
+                Toggle(isOn: $tmdbMatchCards) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("首页与搜索卡片匹配 TMDB")
+                        Text("默认关闭，使用影视源海报和资料；开启后匹配首页卡片图片，以及搜索结果的海报、评分等资料。")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                }
+            }
+            Section(header: Text("连接配置")) {
+                HStack {
+                    Text("API 地址")
+                    TextField("http://api.tmdb.org", text: $apiBase)
+                        .autocapitalization(.none).disableAutocorrection(true)
+                        .multilineTextAlignment(.trailing)
+                }
+                HStack {
+                    Text("图片地址")
+                    TextField("http://images.tmdb.org/t/p", text: $imageBase)
+                        .autocapitalization(.none).disableAutocorrection(true)
+                        .multilineTextAlignment(.trailing)
+                }
+                HStack {
+                    Text("API Key")
+                    Spacer()
+                    if showKey {
+                        TextField("填你的 Key", text: $apiKey)
+                            .autocapitalization(.none).disableAutocorrection(true)
+                            .multilineTextAlignment(.trailing)
+                    } else {
+                        SecureField("填你的 Key", text: $apiKey)
+                            .multilineTextAlignment(.trailing)
+                    }
+                    Button { showKey.toggle() } label: {
+                        Image(systemName: showKey ? "eye.slash" : "eye")
+                            .foregroundColor(.gray)
+                    }
+                    .buttonStyle(.plain)
+                }
+                HStack {
+                    Text("资料语言")
+                    TextField("zh-CN", text: $language)
+                        .autocapitalization(.none).disableAutocorrection(true)
+                        .multilineTextAlignment(.trailing)
+                }
+            }
+            Section {
+                Button("保存配置") {
+                    Store.shared.tmdbApiBase = apiBase.trimmingCharacters(in: .whitespacesAndNewlines)
+                    Store.shared.tmdbImageBase = imageBase.trimmingCharacters(in: .whitespacesAndNewlines)
+                    Store.shared.tmdbLanguage = language.trimmingCharacters(in: .whitespacesAndNewlines)
+                    Store.shared.tmdbKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                    note = "TMDB 配置已保存（换 Key 时旧缓存已清）"
+                }
+                Button("测试连接") {
+                    testing = true
+                    Task {
+                        let r = await TmdbApi.testConnection()
+                        await MainActor.run { note = r; testing = false }
+                    }
+                }
+                .disabled(testing)
+                Button("清除 TMDB 缓存") {
+                    Store.shared.tmdbCacheClear()
+                    note = "TMDB 缓存已清除"
+                }
+                if !note.isEmpty {
+                    Text(note).font(.caption).foregroundColor(.green)
+                }
+            }
+            Section {
+                Text("影视资料来自 TMDB。本应用使用 TMDB API，但未获得 TMDB 的认可或认证。")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .background(cream)
+        .navigationTitle("TMDB 资料配置")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            apiBase = Store.shared.tmdbApiBase
+            imageBase = Store.shared.tmdbImageBase
+            apiKey = Store.shared.tmdbKey
+            language = Store.shared.tmdbLanguage
         }
     }
 }
