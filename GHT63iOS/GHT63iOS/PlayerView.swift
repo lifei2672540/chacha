@@ -30,6 +30,7 @@ final class PlayerModel: ObservableObject {
     private var started = false
     private var watchdog: Task<Void, Never>?
     private var pyTask: Task<Void, Never>?
+    private var sniffTask: Task<Void, Never>?
     private var tgLoader: TGResourceLoader?
 
     init(group: VodGroup, sourceIdx: Int, lineIdx: Int, startEpisode: Episode) {
@@ -90,6 +91,7 @@ final class PlayerModel: ObservableObject {
         errorText = nil
         cacheProgress = nil
         watchdog?.cancel()
+        sniffTask?.cancel()
         if isPY {
             pyTask?.cancel()
             pyTask = Task { await buildPlayPY() }
@@ -99,6 +101,35 @@ final class PlayerModel: ObservableObject {
             buildPlayTG()
             return
         }
+        // 直连且地址无媒体后缀时先嗅探（TV 版 PlayerActivity 同款）：
+        // 金鹰这类源的首线路常给网页播放页（hd.kuktxu.com/play/xxx），直接喂给 AVPlayer
+        // 只会 -11828 报错；嗅到 text/html 就同集切下一线路（第 2 线路就是同地址 + /index.m3u8）。
+        // 代理地址不嗅探（流代理会把所有内容都标成 m3u8），Emby 地址是本机伪地址也不嗅探。
+        if !isEmby, !proxyTried, !currentEp.url.isEmpty, needsSniff(currentEp.url) {
+            let url = currentEp.url
+            sniffTask = Task { [weak self] in
+                let res = await self?.sniffUrl(url)
+                guard let self, !Task.isCancelled, self.currentEp.url == url else { return }
+                if res == "html" {
+                    if self.advanceForHtml() {
+                        self.notice = "该线路是网页，已自动切到下一线路"
+                        ErrorLog.append("网页线路自动切线 \(self.group.name) - \(self.currentEp.title) → 源\(self.currentSourceIdx) 线\(self.currentLineIdx)")
+                        self.buildPlay()
+                    } else {
+                        self.errorText = "播放失败：换无可换"
+                        ErrorLog.append("播放失败换无可换 \(self.group.name) - \(self.currentEp.title)")
+                    }
+                } else {
+                    self.playDirect()
+                }
+            }
+            return
+        }
+        playDirect()
+    }
+
+    /// CMS 直连/代理的起播（嗅探通过或无需嗅探时走这里）。
+    private func playDirect() {
         guard !currentEp.url.isEmpty, let url = resolveURL() else {
             errorText = "播放地址为空"
             ErrorLog.append("播不了：地址为空 \(group.name) - \(currentEp.title) 源\(currentSourceIdx) 线\(currentLineIdx)")
@@ -280,6 +311,77 @@ final class PlayerModel: ObservableObject {
             errorText = "播放失败：换无可换"
             ErrorLog.append("播放失败换无可换 \(group.name) - \(currentEp.title)")
         }
+    }
+
+    /// 地址无媒体后缀时才嗅探（TV 版 needsSniff 同款）。
+    private func needsSniff(_ url: String) -> Bool {
+        let path = url.components(separatedBy: "?").first?.components(separatedBy: "#").first?.lowercased() ?? ""
+        let mediaExt = [".m3u8", ".mp4", ".mkv", ".flv", ".mov", ".ts", ".m4v",
+                        ".avi", ".wmv", ".mpg", ".mpeg", ".webm", ".m4a", ".mp3"]
+        return !mediaExt.contains { path.hasSuffix($0) }
+    }
+
+    /// 只读响应头就关流，不下载正文（TV 版 sniffUrl 同款）：
+    /// 返回 "html"（网页播放页，播不了）、"m3u8"（已确认的流类型）、nil（未知/嗅探失败，照常播）。
+    /// HEAD 优先，个别站不支持 HEAD 时改 Range GET 首字节。
+    private func sniffUrl(_ urlString: String) async -> String? {
+        guard let url = URL(string: urlString) else { return nil }
+        let ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.timeoutIntervalForRequest = 8
+        cfg.timeoutIntervalForResource = 8
+        let session = URLSession(configuration: cfg)
+        func classify(_ ct: String?) -> String? {
+            guard let ct = ct?.lowercased() else { return nil }
+            if ct.contains("text/html") { return "html" }
+            if ct.contains("mpegurl") || ct.contains("x-mpegurl") { return "m3u8" }
+            return nil
+        }
+        var head = URLRequest(url: url, timeoutInterval: 8)
+        head.httpMethod = "HEAD"
+        head.setValue(ua, forHTTPHeaderField: "User-Agent")
+        if let (_, resp) = try? await session.data(for: head),
+           let http = resp as? HTTPURLResponse,
+           let r = classify(http.value(forHTTPHeaderField: "Content-Type")) { return r }
+        var range = URLRequest(url: url, timeoutInterval: 8)
+        range.setValue(ua, forHTTPHeaderField: "User-Agent")
+        range.setValue("bytes=0-0", forHTTPHeaderField: "Range")
+        if let (_, resp) = try? await session.data(for: range),
+           let http = resp as? HTTPURLResponse {
+            return classify(http.value(forHTTPHeaderField: "Content-Type"))
+        }
+        return nil
+    }
+
+    /// 网页线路自动跳过（TV 版 advanceForHtml 同款）：同源下一线路（同集序号），
+    /// 否则下一源的首线路；无路可走返回 false。注意与 advance() 不同：这里不跳集，
+    /// 只换线路——网页线路的同集在下一线路往往就是能播的直链。
+    private func advanceForHtml() -> Bool {
+        let lines = group.sources.indices.contains(currentSourceIdx) ? group.sources[currentSourceIdx].lines : []
+        let epIdx = lines.indices.contains(currentLineIdx) ? (lines[currentLineIdx].episodes.firstIndex(of: currentEp) ?? 0) : 0
+        var nextLine = currentLineIdx + 1
+        while nextLine < lines.count {
+            let eps = lines[nextLine].episodes
+            if !eps.isEmpty {
+                currentLineIdx = nextLine
+                currentEp = eps.indices.contains(epIdx) ? eps[epIdx] : eps[0]
+                proxyTried = false; didSeekIntro = false
+                return true
+            }
+            nextLine += 1
+        }
+        var nextSrc = currentSourceIdx + 1
+        while nextSrc < group.sources.count {
+            if let eps = group.sources[nextSrc].lines.first?.episodes, !eps.isEmpty {
+                currentSourceIdx = nextSrc
+                currentLineIdx = 0
+                currentEp = eps.indices.contains(epIdx) ? eps[epIdx] : eps[0]
+                proxyTried = false; didSeekIntro = false
+                return true
+            }
+            nextSrc += 1
+        }
+        return false
     }
 
     /// PY 解析/播放失败时换线路：同集在下一线路 → 下一源同集（越界取首集）；都没有返回 false。
