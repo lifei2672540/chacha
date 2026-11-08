@@ -1,6 +1,7 @@
 import SwiftUI
 import AVKit
 import Combine
+import UIKit
 
 /// 播放器（TV 版 PlayerActivity 的触屏版）：
 /// AVPlayer 直播 HLS/MP4；断点取本地与云端的大者；每 10 秒存一次进度；
@@ -17,6 +18,11 @@ final class PlayerModel: ObservableObject {
     @Published var notice: String?
     @Published var cacheProgress: Double?
     @Published var cacheMB: Int = 0
+    @Published var currentTime: Double = 0
+    @Published var duration: Double = 0
+    @Published var isPlaying: Bool = false
+    /// 画面模式：适应（完整显示）/ 填充（裁切铺满），AVPlayerViewController 直接吃。
+    @Published var videoGravity: AVLayerVideoGravity = .resizeAspect
 
     let player = AVPlayer()
     private var statusObs: NSKeyValueObservation?
@@ -90,6 +96,9 @@ final class PlayerModel: ObservableObject {
     func buildPlay() {
         errorText = nil
         cacheProgress = nil
+        currentTime = 0
+        duration = 0
+        isPlaying = false
         watchdog?.cancel()
         sniffTask?.cancel()
         if isPY {
@@ -111,7 +120,7 @@ final class PlayerModel: ObservableObject {
                 let res = await self?.sniffUrl(url)
                 guard let self, !Task.isCancelled, self.currentEp.url == url else { return }
                 if res == "html" {
-                    if self.advanceForHtml() {
+                    if self.nextLine() {
                         self.notice = "该线路是网页，已自动切到下一线路"
                         ErrorLog.append("网页线路自动切线 \(self.group.name) - \(self.currentEp.title) → 源\(self.currentSourceIdx) 线\(self.currentLineIdx)")
                         self.buildPlay()
@@ -223,7 +232,10 @@ final class PlayerModel: ObservableObject {
                     self?.handleError()
                 }
             } else if it.status == .readyToPlay {
-                Task { @MainActor in self?.watchdog?.cancel() }
+                Task { @MainActor in
+                    self?.watchdog?.cancel()
+                    if let d = it.duration.seconds, d.isFinite { self?.duration = d }
+                }
             }
         }
         player.replaceCurrentItem(with: item)
@@ -256,6 +268,10 @@ final class PlayerModel: ObservableObject {
     }
 
     private func tick(_ seconds: Double) {
+        // 进度条与播放状态：每秒同步一次（暂停时 rate 为 0，控制条就一直留着）。
+        currentTime = seconds
+        if let d = player.currentItem?.duration.seconds, d.isFinite { duration = d }
+        isPlaying = player.rate > 0
         // 缓冲提示只在卡住时留着；播起来了就撤掉（卡住时 rate 为 0，提示继续留着）
         if cacheProgress != nil && player.rate > 0 { cacheProgress = nil }
         guard seconds.isFinite, seconds > 0 else { return }
@@ -353,10 +369,10 @@ final class PlayerModel: ObservableObject {
         return nil
     }
 
-    /// 网页线路自动跳过（TV 版 advanceForHtml 同款）：同源下一线路（同集序号），
+    /// 换源（TV 版 advanceForHtml 同款）：同源下一线路（同集序号），
     /// 否则下一源的首线路；无路可走返回 false。注意与 advance() 不同：这里不跳集，
     /// 只换线路——网页线路的同集在下一线路往往就是能播的直链。
-    private func advanceForHtml() -> Bool {
+    func nextLine() -> Bool {
         let lines = group.sources.indices.contains(currentSourceIdx) ? group.sources[currentSourceIdx].lines : []
         let epIdx = lines.indices.contains(currentLineIdx) ? (lines[currentLineIdx].episodes.firstIndex(of: currentEp) ?? 0) : 0
         var nextLine = currentLineIdx + 1
@@ -459,6 +475,55 @@ final class PlayerModel: ObservableObject {
         Store.shared.saveSpeed(drama: group.name, speed: next)
     }
 
+    func togglePlay() {
+        if player.rate > 0 { player.pause(); isPlaying = false } else { player.play(); isPlaying = true }
+    }
+
+    /// 进度条拖拽：拖到哪播到哪（茶茶短剧同款，松手才真正跳，拖动时只改显示）。
+    func seek(to fraction: Double) {
+        guard let it = player.currentItem else { return }
+        let dur = it.duration.seconds
+        guard dur.isFinite && dur > 0 else { return }
+        let f = min(max(fraction, 0), 1)
+        let t = f * dur
+        currentTime = t
+        player.seek(to: CMTime(seconds: t, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        saveNow(seconds: t)
+    }
+
+    /// 画面模式：适应（完整显示，不裁切）/ 填充（裁切铺满）来回切。
+    func cycleGravity() {
+        videoGravity = videoGravity == .resizeAspect ? .resizeAspectFill : .resizeAspect
+    }
+
+    /// 选集：同源同线路换集。
+    func jumpToEpisode(_ ep: Episode) {
+        currentEp = ep
+        proxyTried = false; didSeekIntro = false
+        buildPlay()
+    }
+
+    /// 线路表：同集切到指定源/线路（序号越界取首集）。
+    func switchLine(sourceIdx: Int, lineIdx: Int) {
+        guard group.sources.indices.contains(sourceIdx),
+              group.sources[sourceIdx].lines.indices.contains(lineIdx) else { return }
+        let eps = group.sources[sourceIdx].lines[lineIdx].episodes
+        guard !eps.isEmpty else { return }
+        let idx = group.sources[currentSourceIdx].lines.indices.contains(currentLineIdx)
+            ? (group.sources[currentSourceIdx].lines[currentLineIdx].episodes.firstIndex(of: currentEp) ?? 0) : 0
+        currentSourceIdx = sourceIdx
+        currentLineIdx = lineIdx
+        currentEp = eps.indices.contains(idx) ? eps[idx] : eps[0]
+        proxyTried = false; didSeekIntro = false
+        buildPlay()
+    }
+
+    func cancelSleep() {
+        sleepWork?.cancel()
+        sleepWork = nil
+        sleepText = nil
+    }
+
     func markIntro() {
         let t = player.currentTime().seconds
         let (_, outro) = Store.shared.introOutro(for: group.name)
@@ -490,6 +555,7 @@ final class PlayerModel: ObservableObject {
 
     func teardown() {
         watchdog?.cancel()
+        sniffTask?.cancel()
         pyTask?.cancel()
         tgLoader?.cancelAll()
         tgLoader = nil
@@ -839,6 +905,25 @@ final class TGResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
     }
 }
 
+/// 转屏（茶茶短剧同款）：iOS 16+ 用 requestGeometryUpdate，老办法只当回退。
+enum ScreenRotation {
+    static func rotate(to orientation: UIInterfaceOrientation) {
+        let mask: UIInterfaceOrientationMask = orientation.isLandscape ? .landscapeRight : .portrait
+        if let scene = UIApplication.shared.connectedScenes.first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene {
+            scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { _ in
+                rotateLegacy(to: orientation)
+            }
+            return
+        }
+        rotateLegacy(to: orientation)
+    }
+
+    private static func rotateLegacy(to orientation: UIInterfaceOrientation) {
+        UIDevice.current.setValue(orientation.rawValue, forKey: "orientation")
+        UIViewController.attemptRotationToDeviceOrientation()
+    }
+}
+
 struct PlayerView: View {
     var group: VodGroup
     var sourceIdx: Int
@@ -849,6 +934,12 @@ struct PlayerView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var store: Store
     @StateObject private var model: PlayerModel
+    @State private var showControls = true
+    @State private var controlsLocked = false
+    @State private var seekFraction: Double?
+    @State private var hideTask: Task<Void, Never>?
+    @State private var showEpisodes = false
+    @State private var showLines = false
 
     init(group: VodGroup, sourceIdx: Int, lineIdx: Int, startEpisode: Episode, sourceLabel: String, lineLabel: String) {
         self.group = group
@@ -860,67 +951,322 @@ struct PlayerView: View {
         _model = StateObject(wrappedValue: PlayerModel(group: group, sourceIdx: sourceIdx, lineIdx: lineIdx, startEpisode: startEpisode))
     }
 
+    private var progress: Double {
+        model.duration > 0 ? min(max(model.currentTime / model.duration, 0), 1) : 0
+    }
+
+    private var currentOrientation: UIInterfaceOrientation {
+        UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.interfaceOrientation }.first ?? .portrait
+    }
+
     var body: some View {
         ZStack {
-            PlayerControllerView(player: model.player)
+            PlayerControllerView(player: model.player, gravity: model.videoGravity)
                 .ignoresSafeArea()
-            VStack {
-                HStack {
-                    Button("关闭") { dismiss() }
-                    Spacer()
-                    Text("\(group.name) - \(model.currentEp.title)").lineLimit(1)
-                    Spacer()
-                    Button("下一集") { model.nextEpisode(auto: false) }
-                }
-                .padding()
-                .background(Color.black.opacity(0.5))
-                Spacer()
-                VStack(spacing: 8) {
-                    if let n = model.notice { Text(n).font(.caption).foregroundColor(.yellow) }
-                    if let p = model.cacheProgress {
-                        Text(p >= 0 ? "正在缓冲 \(Int(p * 100))%（\(model.cacheMB)MB）" : "正在缓冲 \(model.cacheMB)MB").font(.caption).foregroundColor(.yellow)
-                    }
-                    if let e = model.errorText {
-                        Text(e).foregroundColor(.red)
-                        Button("返回") { dismiss() }
-                    }
-                    HStack(spacing: 16) {
-                        Button("换源") {
-                            if model.advance() { model.buildPlay() }
+            // 点按层：点空白处显隐控制条；锁定时点按无效。
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture { if !controlsLocked { toggleControls() } }
+            if showControls {
+                VStack(spacing: 0) {
+                    // 顶栏：返回 + 剧名/集数 + 睡眠 + 更多
+                    HStack(alignment: .top, spacing: 10) {
+                        glassButton(systemName: "chevron.left", size: 18) { dismiss() }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(group.name).font(.headline).bold().foregroundColor(.white).lineLimit(1)
+                            Text(model.currentEp.title).font(.subheadline).foregroundColor(.white.opacity(0.8)).lineLimit(1)
                         }
-                        Button("倍速 \(model.speed == 1 ? "1" : "\(model.speed)")x") { model.cycleSpeed() }
-                        Button("记片头") { model.markIntro() }
-                        Button("记片尾") { model.markOutroAndNext() }
-                        Menu(model.sleepText ?? "睡眠定时") {
+                        Spacer()
+                        if let s = model.sleepText {
+                            Text(s).font(.caption).foregroundColor(.red).padding(.top, 12)
+                        }
+                        Menu {
                             Button("15 分钟") { model.setSleep(minutes: 15) }
                             Button("30 分钟") { model.setSleep(minutes: 30) }
                             Button("60 分钟") { model.setSleep(minutes: 60) }
+                            Button("取消睡眠定时") { model.cancelSleep() }
+                        } label: {
+                            Image(systemName: "moon.fill")
+                                .font(.system(size: 17)).foregroundColor(model.sleepText == nil ? .white : .red)
+                                .frame(width: 40, height: 40)
+                                .background(.ultraThinMaterial).clipShape(RoundedRectangle(cornerRadius: 12))
+                        }
+                        Menu {
+                            Button("下一集") { model.nextEpisode(auto: false) }
+                            Button("换源") { if model.nextLine() { model.buildPlay() } }
+                            Button("记片头") { model.markIntro() }
+                            Button("记片尾") { model.markOutroAndNext() }
+                        } label: {
+                            Image(systemName: "ellipsis")
+                                .font(.system(size: 17, weight: .bold)).foregroundColor(.white)
+                                .frame(width: 40, height: 40)
+                                .background(.ultraThinMaterial).clipShape(RoundedRectangle(cornerRadius: 12))
                         }
                     }
-                    .buttonStyle(.bordered)
-                    .tint(.white)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .background(
+                        LinearGradient(colors: [.black.opacity(0.45), .clear], startPoint: .top, endPoint: .bottom)
+                            .allowsHitTesting(false)
+                    )
+                    Spacer()
+                    // 中间：播放/暂停
+                    Button(action: { model.togglePlay(); scheduleHide() }) {
+                        Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 54)).foregroundColor(.white.opacity(0.92))
+                            .shadow(radius: 8)
+                    }
+                    .buttonStyle(.plain)
+                    Spacer()
+                    // 底部：提示 + 进度条 + 功能行
+                    VStack(spacing: 10) {
+                        if let n = model.notice { Text(n).font(.caption).foregroundColor(.yellow) }
+                        if let p = model.cacheProgress {
+                            Text(p >= 0 ? "正在缓冲 \(Int(p * 100))%（\(model.cacheMB)MB）" : "正在缓冲 \(model.cacheMB)MB").font(.caption).foregroundColor(.yellow)
+                        }
+                        if let e = model.errorText {
+                            Text(e).foregroundColor(.red)
+                            Button("返回") { dismiss() }
+                        }
+                        // 可拖进度条 + 时间
+                        HStack(spacing: 10) {
+                            Text(formatTime(seekFraction.map { $0 * model.duration } ?? model.currentTime))
+                                .font(.caption).foregroundColor(.white).frame(width: 44, alignment: .trailing)
+                            GeometryReader { barGeo in
+                                ZStack(alignment: .leading) {
+                                    Capsule().fill(Color.white.opacity(0.3)).frame(height: 4)
+                                    Capsule().fill(Color.red)
+                                        .frame(width: max(barGeo.size.width * (seekFraction ?? progress), 0), height: 4)
+                                    Circle().fill(Color.white).frame(width: 14, height: 14)
+                                        .offset(x: max(barGeo.size.width * (seekFraction ?? progress) - 7, 0))
+                                }
+                                .frame(height: 28)
+                                .contentShape(Rectangle())
+                                .gesture(
+                                    DragGesture(minimumDistance: 0)
+                                        .onChanged { v in
+                                            guard barGeo.size.width > 0 else { return }
+                                            seekFraction = min(max(v.location.x / barGeo.size.width, 0), 1)
+                                        }
+                                        .onEnded { v in
+                                            guard barGeo.size.width > 0 else { return }
+                                            let f = min(max(v.location.x / barGeo.size.width, 0), 1)
+                                            model.seek(to: f)
+                                            seekFraction = nil
+                                            scheduleHide()
+                                        }
+                                )
+                            }
+                            .frame(height: 28)
+                            Text(formatTime(model.duration))
+                                .font(.caption).foregroundColor(.white).frame(width: 44, alignment: .leading)
+                        }
+                        // 功能行：左 倍速/画面，右 选集/线路/全屏
+                        HStack(spacing: 0) {
+                            HStack(spacing: 10) {
+                                pillButton("倍速 \(model.speed == 1 ? "1" : "\(model.speed)")x") {
+                                    model.cycleSpeed(); scheduleHide()
+                                }
+                                pillButton("画面 \(model.videoGravity == .resizeAspect ? "适应" : "填充")") {
+                                    model.cycleGravity(); scheduleHide()
+                                }
+                            }
+                            Spacer()
+                            HStack(spacing: 10) {
+                                pillButton("选集") { showEpisodes = true }
+                                pillButton("线路") { showLines = true }
+                                Button(action: { toggleOrientation() }) {
+                                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                        .font(.system(size: 16)).foregroundColor(.white)
+                                        .frame(width: 36, height: 36)
+                                        .background(.ultraThinMaterial).clipShape(RoundedRectangle(cornerRadius: 10))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 24)
+                    .background(
+                        LinearGradient(colors: [.clear, .black.opacity(0.55)], startPoint: .top, endPoint: .bottom)
+                            .allowsHitTesting(false)
+                    )
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            // 锁定按钮：控制条显示时在右缘；锁定时单独留在右缘，点它解锁。
+            if showControls || controlsLocked {
+                HStack {
+                    Spacer()
+                    Button(action: { toggleLock() }) {
+                        Image(systemName: controlsLocked ? "lock.fill" : "lock.open")
+                            .font(.system(size: 18)).foregroundColor(.white)
+                            .frame(width: 40, height: 40)
+                            .background(.ultraThinMaterial).clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 16)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .background(Color.black)
+        .onAppear { scheduleHide() }
+        // 暂停时留着控制条，恢复播放 3 秒后再藏（茶茶短剧同款）。
+        .onChange(of: model.isPlaying) { playing in
+            if playing { scheduleHide() } else { hideTask?.cancel() }
+        }
+        .onDisappear {
+            hideTask?.cancel()
+            if currentOrientation.isLandscape { ScreenRotation.rotate(to: .portrait) }
+            model.teardown()
+        }
+        .sheet(isPresented: $showEpisodes) { EpisodePickerSheet(model: model) }
+        .sheet(isPresented: $showLines) { LinePickerSheet(model: model) }
+        .task { await model.start() }
+    }
+
+    /// 玻璃圆角图标钮（顶栏返回/睡眠/更多、右缘锁定同款）。
+    private func glassButton(systemName: String, size: CGFloat, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: size, weight: .semibold)).foregroundColor(.white)
+                .frame(width: 40, height: 40)
+                .background(.ultraThinMaterial).clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// 玻璃文字 pill（倍速/画面/选集/线路同款）。
+    private func pillButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.subheadline).foregroundColor(.white)
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                .background(.ultraThinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func toggleControls() {
+        showControls.toggle()
+        if showControls { scheduleHide() } else { hideTask?.cancel() }
+    }
+
+    private func toggleLock() {
+        if controlsLocked {
+            controlsLocked = false
+            showControls = true
+            scheduleHide()
+        } else {
+            controlsLocked = true
+            showControls = false
+            hideTask?.cancel()
+        }
+    }
+
+    private func toggleOrientation() {
+        ScreenRotation.rotate(to: currentOrientation.isLandscape ? .portrait : .landscapeRight)
+    }
+
+    /// 3 秒无操作自动藏控制条：没播（暂停/缓冲）就一直等，播了再等 3 秒藏；
+    /// 一次性的检查不可靠（正好卡在暂停那一刻就永远不藏了），所以循环等（茶茶短剧同款）。
+    private func scheduleHide() {
+        hideTask?.cancel()
+        hideTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                if Task.isCancelled { return }
+                if model.isPlaying {
+                    showControls = false
+                    return
+                }
+            }
+        }
+    }
+
+    private func formatTime(_ s: Double) -> String {
+        guard s.isFinite, s >= 0 else { return "0:00" }
+        let i = Int(s)
+        return "\(i / 60):\(String(format: "%02d", i % 60))"
+    }
+}
+
+/// 选集表：当前线路的全部集数，当前集红色高亮。
+private struct EpisodePickerSheet: View {
+    @ObservedObject var model: PlayerModel
+    @Environment(\.dismiss) private var dismiss
+
+    private var episodes: [Episode] {
+        guard model.group.sources.indices.contains(model.currentSourceIdx),
+              model.group.sources[model.currentSourceIdx].lines.indices.contains(model.currentLineIdx) else { return [] }
+        return model.group.sources[model.currentSourceIdx].lines[model.currentLineIdx].episodes
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 5), spacing: 8) {
+                    ForEach(episodes) { ep in
+                        Button(ep.title) {
+                            model.jumpToEpisode(ep)
+                            dismiss()
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(ep == model.currentEp ? .red : .gray)
+                    }
                 }
                 .padding()
-                .background(Color.black.opacity(0.5))
             }
-            .foregroundColor(.white)
+            .navigationTitle("\(model.group.name) · 选集")
+            .navigationBarTitleDisplayMode(.inline)
         }
-        .task { await model.start() }
-        .onDisappear { model.teardown() }
+    }
+}
+
+/// 线路表：全部源 × 线路，当前线路红色高亮，点哪条切哪条（同集）。
+private struct LinePickerSheet: View {
+    @ObservedObject var model: PlayerModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(model.group.sources.indices, id: \.self) { si in
+                    Section(model.group.sources[si].sourceLabel) {
+                        ForEach(model.group.sources[si].lines.indices, id: \.self) { li in
+                            let line = model.group.sources[si].lines[li]
+                            Button(line.label.isEmpty ? "线路 \(li + 1)" : line.label) {
+                                model.switchLine(sourceIdx: si, lineIdx: li)
+                                dismiss()
+                            }
+                            .foregroundColor(si == model.currentSourceIdx && li == model.currentLineIdx ? .red : .primary)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("线路")
+            .navigationBarTitleDisplayMode(.inline)
+        }
     }
 }
 
 private struct PlayerControllerView: UIViewControllerRepresentable {
     var player: AVPlayer
+    var gravity: AVLayerVideoGravity
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let vc = AVPlayerViewController()
         vc.player = player
-        vc.showsPlaybackControls = true
-        // 绝不自动进系统全屏：全屏后自家关闭按钮和报错文字全没了，播不了就是纯黑屏
+        // 系统控制条关掉：全套控制条自家画（进度条可拖、3 秒自动藏），
+        // 和系统那套叠在一起会打架；绝不自动进系统全屏（全屏后自家关闭按钮和报错文字全没了）。
+        vc.showsPlaybackControls = false
+        vc.videoGravity = gravity
         vc.entersFullScreenWhenPlaybackBegins = false
         return vc
     }
     func updateUIViewController(_ vc: AVPlayerViewController, context: Context) {
         vc.player = player
+        vc.videoGravity = gravity
     }
 }
