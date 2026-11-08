@@ -308,90 +308,88 @@ struct TgShowDetailView: View {
     @State private var fillHint = ""
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if loading && detail == nil {
-                    ProgressView()
-                } else if let error = error, detail == nil {
-                    VStack(spacing: 12) {
-                        Text(error).foregroundColor(.red)
-                        Button("重试") { Task { await load() } }
-                    }
-                    .padding()
-                } else if let det = detail {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 16) {
-                            HStack(alignment: .top, spacing: 12) {
-                                AsyncImage(url: URL(string: show.cover.isEmpty ? "" : TgAPI.baseUrl + show.cover)) { phase in
-                                    if let img = phase.image {
-                                        img.resizable().aspectRatio(contentMode: .fill)
-                                    } else {
-                                        Color(white: 0.2)
-                                    }
-                                }
-                                .frame(width: 110, height: 154)
-                                .clipped()
-                                .cornerRadius(8)
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text(det.show.name).font(.headline).foregroundColor(.white)
-                                    Text(det.show.epCount > 0 ? "更新至 \(det.show.epCount) 集" : "共 \(det.show.total) 条")
-                                        .font(.caption).foregroundColor(.gray)
-                                    if !det.missing.isEmpty {
-                                        Text("缺第 \(det.missing.map { "\($0)" }.joined(separator: "、")) 集")
-                                            .font(.caption).foregroundColor(.yellow)
-                                    }
-                                    Button(filling ? "正在补全…" : "搜索补全缺集") {
-                                        Task { await fill() }
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .disabled(filling || det.missing.isEmpty)
-                                    if !fillHint.isEmpty {
-                                        Text(fillHint).font(.caption).foregroundColor(.gray)
-                                    }
-                                    Button(tgStore.isFavorite(showId: det.show.id) ? "取消收藏" : "收藏这部剧") {
-                                        tgStore.toggleFavorite(show: det.show)
-                                    }
-                                    .buttonStyle(.bordered)
+        Group {
+            if loading && detail == nil {
+                ProgressView()
+            } else if let error = error, detail == nil {
+                VStack(spacing: 12) {
+                    Text(error).foregroundColor(.red)
+                    Button("重试") { Task { await load() } }
+                }
+                .padding()
+            } else if let det = detail {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        HStack(alignment: .top, spacing: 12) {
+                            AsyncImage(url: URL(string: show.cover.isEmpty ? "" : TgAPI.baseUrl + show.cover)) { phase in
+                                if let img = phase.image {
+                                    img.resizable().aspectRatio(contentMode: .fill)
+                                } else {
+                                    Color(white: 0.2)
                                 }
                             }
-                            .padding(.horizontal)
-                            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 6), spacing: 8) {
-                                ForEach(det.episodes) { ep in
-                                    Button {
-                                        if let idx = det.episodes.firstIndex(of: ep) {
-                                            playTarget = TgPlayTarget(episodes: det.episodes, index: idx,
-                                                                     showId: det.show.id, showName: det.show.name,
-                                                                     cover: det.show.cover)
-                                        }
-                                    } label: {
-                                        ZStack(alignment: .topTrailing) {
-                                            Text(ep.episodeNo > 0 ? "\(ep.episodeNo)" : "•")
-                                                .frame(maxWidth: .infinity)
-                                                .padding(.vertical, 10)
-                                                .background(Color.white.opacity(0.12))
-                                                .cornerRadius(8)
-                                                .foregroundColor(.white)
-                                            if Store.shared.progress(for: ep.streamUrl) > 0 {
-                                                Circle().fill(Color.orange).frame(width: 7, height: 7)
-                                                    .offset(x: -4, y: 4)
-                                            }
-                                        }
-                                    }
-                                    .buttonStyle(.plain)
+                            .frame(width: 110, height: 154)
+                            .clipped()
+                            .cornerRadius(8)
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(det.show.name).font(.headline).foregroundColor(.white)
+                                Text(det.show.epCount > 0 ? "更新至 \(det.show.epCount) 集" : "共 \(det.show.total) 条")
+                                    .font(.caption).foregroundColor(.gray)
+                                if !det.missing.isEmpty {
+                                    Text("缺第 \(det.missing.map { "\($0)" }.joined(separator: "、")) 集")
+                                        .font(.caption).foregroundColor(.yellow)
                                 }
+                                Button(filling ? "正在补全…" : "搜索补全缺集") {
+                                    Task { await fill() }
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(filling || det.missing.isEmpty)
+                                if !fillHint.isEmpty {
+                                    Text(fillHint).font(.caption).foregroundColor(.gray)
+                                }
+                                Button(tgStore.isFavorite(showId: det.show.id) ? "取消收藏" : "收藏这部剧") {
+                                    tgStore.toggleFavorite(show: det.show)
+                                }
+                                .buttonStyle(.bordered)
                             }
-                            .padding(.horizontal)
-                            Text("橙点 = 这集看过一部分，点进去接着播。")
-                                .font(.caption).foregroundColor(.gray).padding(.horizontal)
                         }
-                        .padding(.vertical)
+                        .padding(.horizontal)
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 6), spacing: 8) {
+                            ForEach(det.episodes) { ep in
+                                Button {
+                                    if let idx = det.episodes.firstIndex(of: ep) {
+                                        playTarget = TgPlayTarget(episodes: det.episodes, index: idx,
+                                                                 showId: det.show.id, showName: det.show.name,
+                                                                 cover: det.show.cover)
+                                    }
+                                } label: {
+                                    ZStack(alignment: .topTrailing) {
+                                        Text(ep.episodeNo > 0 ? "\(ep.episodeNo)" : "•")
+                                            .frame(maxWidth: .infinity)
+                                            .padding(.vertical, 10)
+                                            .background(Color.white.opacity(0.12))
+                                            .cornerRadius(8)
+                                            .foregroundColor(.white)
+                                        if Store.shared.progress(for: ep.streamUrl) > 0 {
+                                            Circle().fill(Color.orange).frame(width: 7, height: 7)
+                                                .offset(x: -4, y: 4)
+                                        }
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal)
+                        Text("橙点 = 这集看过一部分，点进去接着播。")
+                            .font(.caption).foregroundColor(.gray).padding(.horizontal)
                     }
+                    .padding(.vertical)
                 }
             }
-            .navigationTitle(show.name)
-            .navigationBarTitleDisplayMode(.inline)
-            .task { await load() }
         }
+        .navigationTitle(show.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await load() }
     }
 
     private func load() async {
@@ -439,61 +437,59 @@ struct TgBrowseView: View {
     private var pageCount: Int { max(1, (total + pageSize - 1) / pageSize) }
 
     var body: some View {
-        NavigationStack {
-            VStack {
-                if let error = error, videos.isEmpty {
-                    VStack(spacing: 12) {
-                        Text(error).foregroundColor(.red)
-                        Button("重试") { Task { await load(page: 1) } }
+        VStack {
+            if let error = error, videos.isEmpty {
+                VStack(spacing: 12) {
+                    Text(error).foregroundColor(.red)
+                    Button("重试") { Task { await load(page: 1) } }
+                }
+                .padding()
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 105), spacing: 12)], spacing: 16) {
+                        ForEach(videos) { v in
+                            Button {
+                                if let idx = videos.firstIndex(of: v) {
+                                    playTarget = TgPlayTarget(episodes: videos, index: idx,
+                                                             showId: v.show ?? "", showName: v.show ?? v.title,
+                                                             cover: v.thumbUrl)
+                                }
+                            } label: {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    AsyncImage(url: URL(string: v.absUrl(TgAPI.baseUrl, v.thumbUrl))) { phase in
+                                        if let img = phase.image {
+                                            img.resizable().aspectRatio(contentMode: .fill)
+                                        } else {
+                                            Color(white: 0.2)
+                                        }
+                                    }
+                                    .frame(width: 110, height: 154)
+                                    .clipped()
+                                    .cornerRadius(8)
+                                    Text(v.title).font(.caption).lineLimit(2).foregroundColor(.white)
+                                    Text(v.metaLine()).font(.caption2).foregroundColor(.gray).lineLimit(1)
+                                }
+                                .frame(width: 110)
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                     .padding()
-                } else {
-                    ScrollView {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 105), spacing: 12)], spacing: 16) {
-                            ForEach(videos) { v in
-                                Button {
-                                    if let idx = videos.firstIndex(of: v) {
-                                        playTarget = TgPlayTarget(episodes: videos, index: idx,
-                                                                 showId: v.show ?? "", showName: v.show ?? v.title,
-                                                                 cover: v.thumbUrl)
-                                    }
-                                } label: {
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        AsyncImage(url: URL(string: v.absUrl(TgAPI.baseUrl, v.thumbUrl))) { phase in
-                                            if let img = phase.image {
-                                                img.resizable().aspectRatio(contentMode: .fill)
-                                            } else {
-                                                Color(white: 0.2)
-                                            }
-                                        }
-                                        .frame(width: 110, height: 154)
-                                        .clipped()
-                                        .cornerRadius(8)
-                                        Text(v.title).font(.caption).lineLimit(2).foregroundColor(.white)
-                                        Text(v.metaLine()).font(.caption2).foregroundColor(.gray).lineLimit(1)
-                                    }
-                                    .frame(width: 110)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .padding()
-                    }
-                    HStack(spacing: 20) {
-                        Button("上一页") { Task { await load(page: max(1, page - 1)) } }
-                            .disabled(page <= 1)
-                        Text("第 \(page) / \(pageCount) 页").font(.caption).foregroundColor(.gray)
-                        Button("下一页") { Task { await load(page: min(pageCount, page + 1)) } }
-                            .disabled(page >= pageCount)
-                    }
-                    .padding(.bottom)
                 }
-                if loading { ProgressView() }
+                HStack(spacing: 20) {
+                    Button("上一页") { Task { await load(page: max(1, page - 1)) } }
+                        .disabled(page <= 1)
+                    Text("第 \(page) / \(pageCount) 页").font(.caption).foregroundColor(.gray)
+                    Button("下一页") { Task { await load(page: min(pageCount, page + 1)) } }
+                        .disabled(page >= pageCount)
+                }
+                .padding(.bottom)
             }
-            .navigationTitle(channel.title)
-            .navigationBarTitleDisplayMode(.inline)
-            .task { await load(page: 1) }
+            if loading { ProgressView() }
         }
+        .navigationTitle(channel.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await load(page: 1) }
     }
 
     private func load(page: Int) async {
