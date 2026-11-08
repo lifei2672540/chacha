@@ -10,6 +10,9 @@ struct SettingsView: View {
     @State private var selfTestResult = ""
     @State private var testing = false
     @State private var logText = ErrorLog.read()
+    @State private var tgBase = TgAPI.base
+    @State private var tgSavedHint = ""
+    @State private var showTgAuth = false
 
     var body: some View {
         ScrollView {
@@ -83,6 +86,32 @@ struct SettingsView: View {
                     }
                 }
                 VStack(alignment: .leading, spacing: 8) {
+                    Text("Telegram 采集端").font(.headline)
+                    TextField("采集端地址", text: $tgBase)
+                        .textFieldStyle(.roundedBorder)
+                        .textInputAutocapitalization(.never)
+                    HStack {
+                        Button("保存地址") {
+                            let url = tgBase.trimmingCharacters(in: .whitespaces)
+                            guard !url.isEmpty else {
+                                tgSavedHint = "地址不能为空"
+                                return
+                            }
+                            TgAPI.base = url
+                            tgSavedHint = "已保存，去首页 TG 档位查看"
+                        }
+                        .buttonStyle(.bordered)
+                        Button("扫码登录") { showTgAuth = true }
+                            .buttonStyle(.bordered)
+                    }
+                    Text("采集端跑在家里软路由上（默认 http://192.168.31.254:8899）；地址不对或服务没起，首页 TG 页会提示连不上。会话过期时在这里扫码重登，不用上路由器输验证码。")
+                        .font(.caption).foregroundColor(.gray)
+                    if !tgSavedHint.isEmpty {
+                        Text(tgSavedHint).font(.caption).foregroundColor(.gray)
+                    }
+                }
+                .sheet(isPresented: $showTgAuth) { TgAuthView() }
+                VStack(alignment: .leading, spacing: 8) {
                     Text("内嵌 Python").font(.headline)
                     Text(PyRuntime.version).font(.caption).foregroundColor(.gray)
                         .lineLimit(2)
@@ -116,9 +145,9 @@ struct SettingsView: View {
                         ShareLink(item: logText) { Text("分享") }.buttonStyle(.bordered)
                     }
                 }
-                Text("茶茶短剧 1.1.0（原生版）")
+                Text("茶茶短剧 1.2.0（原生版）")
                     .font(.caption).foregroundColor(.gray)
-                Text("说明：本版接订阅里的 PY 源与 CMS 源；要 Crypto/lxml 的源能不能跑，看上面自检里 Crypto.Cipher.AES / lxml.etree 两行（自签下扩展模块要转成框架才能加载）。")
+                Text("说明：本版接订阅里的 PY 源与 CMS 源，另接家里 Telegram 采集端（首页 TG 档位：剧聚合、收藏、继续观看、频道管理、缺集补全、扫码登录）；要 Crypto/lxml 的源能不能跑，看上面自检里 Crypto.Cipher.AES / lxml.etree 两行（自签下扩展模块要转成框架才能加载）。")
                     .font(.caption).foregroundColor(.gray)
             }
             .padding()
