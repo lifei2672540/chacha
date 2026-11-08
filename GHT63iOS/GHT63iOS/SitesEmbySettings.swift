@@ -47,6 +47,8 @@ struct SitesView: View {
             .task { await load() }
             .navigationDestination(for: VodGroup.self) { g in DetailView(group: g) }
         }
+        // 底栏藏掉（写在 TabView 上不生效，1.3.0 的教训）。
+        .toolbar(.hidden, for: .tabBar)
     }
 
     private func load() async {
@@ -176,6 +178,8 @@ struct EmbyView: View {
             .navigationTitle("Emby")
             .navigationDestination(for: VodGroup.self) { g in DetailView(group: g) }
         }
+        // 底栏藏掉（写在 TabView 上不生效，1.3.0 的教训）。
+        .toolbar(.hidden, for: .tabBar)
     }
 
     private func loadViews() async {
@@ -276,7 +280,7 @@ struct SettingsView: View {
                 Section {
                     Text("端侧 PY 正在接入：解释器与蜘蛛桥已就绪，订阅浏览界面下一阶段来；Jar 不在 iOS 路线内。")
                         .font(.caption).foregroundColor(.secondary)
-                    Text("茶茶点播 iOS 1.3.0（原生版）").font(.caption).foregroundColor(.secondary)
+                    Text("茶茶点播 iOS 1.3.1（原生版）").font(.caption).foregroundColor(.secondary)
                     Text("内嵌 Python：\(PyRuntime.version)").font(.caption).foregroundColor(.secondary)
                     if !savedNote.isEmpty { Text(savedNote).font(.caption).foregroundColor(.green) }
                 }
@@ -290,8 +294,8 @@ struct SettingsView: View {
                 embyPw = EmbyApi.password
             }
         }
-        // 设置页是浅色分组样式（首页仍是深色）。
-        .preferredColorScheme(.light)
+        // 底栏藏掉（写在 TabView 上不生效，1.3.0 的教训）；浅色由 tab 级别定（GHT63App）。
+        .toolbar(.hidden, for: .tabBar)
     }
 
     // MARK: - PY 自检（阶段 2 验收：订阅拉取 + 首个 PY 源的 homeContent）
