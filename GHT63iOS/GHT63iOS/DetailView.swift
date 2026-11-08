@@ -8,7 +8,11 @@ struct DetailView: View {
     @EnvironmentObject var store: Store
     @State private var sourceIdx = 0
     @State private var lineIdx = 0
-    @State private var backdrop: String?
+    /// 大海报地址（先上接口海报，TMDB 有竖图再换）：蚂蚁详情页同款通顶大图。
+    @State private var heroURL: URL?
+    @State private var tmdbScore: Double = 0
+    @State private var synopsisExpanded = false
+    @State private var sortDesc = false
     @State private var playEp: Episode?
     /// 果鉴式选集分组：每组 30 集，默认停在续播集所在组。
     @State private var epGroup = 0
@@ -27,7 +31,31 @@ struct DetailView: View {
     private var epGroupCount: Int { max(1, (eps.count + 29) / 30) }
     private var shownEps: [Episode] {
         let g = min(epGroup, epGroupCount - 1)
-        return Array(eps.dropFirst(g * 30).prefix(30))
+        let slice = Array(eps.dropFirst(g * 30).prefix(30))
+        // 倒序只反当前这 30 集的显示顺序，分组本身不动，续播定位不受影响。
+        return sortDesc ? slice.reversed() : slice
+    }
+    /// 简介：有些源把同一段拼了两遍（中缝可带空白），掐掉重复的一半再显示。
+    private var synopsis: String {
+        let t = cleanHtmlText(group.content).trimmingCharacters(in: .whitespacesAndNewlines)
+        let n = t.count
+        guard n > 40 else { return t }
+        let chars = Array(t)
+        for start in [n / 2 - 2, n / 2 - 1, n / 2, n / 2 + 1, n / 2 + 2] {
+            guard start > 10, start < n - 10 else { continue }
+            let a = String(chars[..<start]).trimmingCharacters(in: .whitespaces)
+            let b = String(chars[start...]).trimmingCharacters(in: .whitespaces)
+            if !a.isEmpty, a == b { return a }
+        }
+        return t
+    }
+    /// 海报下的元数据行：集数 · 年份 · 类型（蚂蚁详情页同款）。
+    private var metaLine: String {
+        var parts: [String] = []
+        if eps.count > 0 { parts.append("\(eps.count) 集") }
+        if !group.year.isEmpty { parts.append(group.year) }
+        if !group.typeName.isEmpty { parts.append(group.typeName) }
+        return parts.joined(separator: " · ")
     }
     private func groupLabel(_ g: Int) -> String {
         "\(g * 30 + 1)-\(min((g + 1) * 30, eps.count))"
@@ -40,47 +68,89 @@ struct DetailView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                // 背景：封面模糊作底（果鉴式），先上 CMS 海报，TMDB 有横图再换锐图
+            VStack(alignment: .leading, spacing: 0) {
+                // 大海报（蚂蚁详情页同款）：清晰海报通顶，下沿渐隐，标题压在图上
                 ZStack(alignment: .bottomLeading) {
-                    AsyncImage(url: URL(string: backdrop ?? group.pic)) { phase in
+                    AsyncImage(url: heroURL) { phase in
                         switch phase {
                         case .success(let img): img.resizable().scaledToFill()
                         default: Color.gray.opacity(0.3)
                         }
                     }
-                    .blur(radius: 18)
-                    .scaleEffect(1.1)
-                    .frame(height: 220).clipped()
-                    LinearGradient(colors: [.clear, .black.opacity(0.7)], startPoint: .top, endPoint: .bottom)
-                        .frame(height: 220)
-                    VStack(alignment: .leading, spacing: 4) {
+                    .frame(height: 440).clipped()
+                    LinearGradient(colors: [.clear, .black.opacity(0.15), .black.opacity(0.85)],
+                                   startPoint: .top, endPoint: .bottom)
+                        .frame(height: 440)
+                    VStack(alignment: .leading, spacing: 6) {
                         Text(group.name).font(.largeTitle.bold()).foregroundColor(.white)
-                        Text([group.typeName, group.year].filter { !$0.isEmpty }.joined(separator: " · "))
-                            .foregroundColor(.white.opacity(0.85))
+                            .lineLimit(2)
+                        if !metaLine.isEmpty {
+                            Text(metaLine).foregroundColor(.white.opacity(0.9))
+                        }
                     }
                     .padding()
                 }
-                VStack(alignment: .leading, spacing: 12) {
-                    if !group.content.isEmpty {
-                        Text(cleanHtmlText(group.content)).font(.body)
+                VStack(alignment: .leading, spacing: 16) {
+                    // TMDB 评分（有 Key 且匹配到才有）
+                    if tmdbScore > 0 {
+                        Text("TMDB \(String(format: "%.1f", tmdbScore))")
+                            .font(.subheadline.bold())
+                            .foregroundColor(Color(red: 0.3, green: 0.85, blue: 0.8))
+                            .padding(.horizontal, 10).padding(.vertical, 5)
+                            .background(Color.white.opacity(0.12))
+                            .cornerRadius(8)
                     }
+                    // 简介：默认只露 3 行，点展开看全文（蚂蚁同款）
+                    if !synopsis.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(synopsis).font(.body)
+                                .lineLimit(synopsisExpanded ? nil : 3)
+                            if synopsis.count > 120 {
+                                Button(synopsisExpanded ? "收起简介 ⌃" : "展开简介 ⌄") {
+                                    synopsisExpanded.toggle()
+                                }
+                                .font(.subheadline)
+                                .foregroundColor(.gray)
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    // 大播放键（蚂蚁同款白底通栏）+ 追剧圆钮
                     HStack(spacing: 12) {
-                        Button(resumeEp == nil ? "播放" : "继续播放") {
+                        Button {
                             if let ep = resumeEp ?? line?.episodes.first {
                                 ErrorLog.append("点播放 \(group.name) - \(ep.title) url=\(ep.url)")
                                 playEp = ep
                             } else {
                                 ErrorLog.append("点播放无集可播 \(group.name)")
                             }
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "play.fill")
+                                Text(resumeEp == nil ? "立即播放" : "继续播放")
+                            }
+                            .font(.headline)
+                            .foregroundColor(.black)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 52)
+                            .background(Color.white)
+                            .cornerRadius(26)
                         }
-                        .buttonStyle(.borderedProminent)
-                        Button(isFav ? "已追剧" : "追剧") {
+                        .buttonStyle(.plain)
+                        Button {
                             let total = group.allEpisodes
                             store.toggleFavorite(FavItem(name: group.name, pic: group.pic,
                                                          lastEp: resumeEp?.title ?? "", totalEps: total, status: "watching"))
+                        } label: {
+                            Image(systemName: isFav ? "bookmark.fill" : "bookmark")
+                                .font(.system(size: 20))
+                                .foregroundColor(isFav ? .red : .white)
+                                .frame(width: 52, height: 52)
+                                .background(Color.white.opacity(0.12))
+                                .clipShape(Circle())
+                                .overlay(Circle().stroke(Color.white.opacity(0.3), lineWidth: 1))
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.plain)
                     }
                     // 源切换
                     if group.sources.count > 1 {
@@ -99,9 +169,21 @@ struct DetailView: View {
                     // 选集：每组 30 集；看过的集变浅，续播集红框高亮
                     if !eps.isEmpty {
                         HStack {
-                            Text("选集").font(.headline)
+                            Text("剧集").font(.title2.bold())
+                            Text("\(eps.count)").font(.title3).foregroundColor(.secondary)
                             Spacer()
-                            Text("\(eps.count) 集").font(.caption).foregroundColor(.secondary)
+                            Button {
+                                sortDesc.toggle()
+                                if resumeEp != nil { resetEpGroup() }
+                                else { epGroup = sortDesc ? epGroupCount - 1 : 0 }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "arrow.up.arrow.down").font(.caption)
+                                    Text(sortDesc ? "倒序" : "正序").font(.subheadline)
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(.gray)
                         }
                         if epGroupCount > 1 {
                             FlowChips(items: (0..<epGroupCount).map { groupLabel($0) },
@@ -137,11 +219,13 @@ struct DetailView: View {
                     }
                 }
                 .padding(.horizontal)
+                .padding(.top, 16)
+                // 别让悬浮玻璃底栏盖住最下面一行
+                .padding(.bottom, 96)
             }
         }
-        .navigationTitle(group.name)
-        .navigationBarTitleDisplayMode(.inline)
-        .task { await loadBackdrop() }
+        // 标题在海报上，导航栏只留返回键（蚂蚁同款）。
+        .task { await loadTmdb() }
         // 源/线路切换已在 chips 回调里调 resetEpGroup；onAppear 覆盖进页与播完返回
         .onAppear { resetEpGroup() }
         // 以集本身驱动打开：集不到位 cover 就打不开，杜绝“开了个空壳”这一类问题
@@ -164,12 +248,19 @@ struct DetailView: View {
         return (sourceIdx, lineIdx)
     }
 
-    private func loadBackdrop() async {
-        // 详情页海报背景开关（设置 → 观看体验 → 视频设置）：关了不用影视海报。
+    private func loadTmdb() async {
+        // 先上接口自带海报，TMDB 有竖图再换高清竖图（大海报用竖图，横图裁得太狠）。
+        if !group.pic.isEmpty { heroURL = URL(string: group.pic) }
+        // 详情页海报背景开关（设置 → 观看体验 → 视频设置）：关了不用 TMDB 海报与评分。
         guard await Store.shared.detailPosterBackdrop else { return }
-        guard backdrop == nil else { return }
-        if let hit = await TmdbApi.lookup(title: group.name, year: group.year), !hit.backdrop.isEmpty {
-            backdrop = hit.backdrop
+        guard let hit = await TmdbApi.lookup(title: group.name, year: group.year) else { return }
+        tmdbScore = hit.score
+        if !hit.poster.isEmpty {
+            // 竖图取 w780（卡片用的 w500 在大海报上偏糊）。
+            let big = hit.poster.replacingOccurrences(of: "/w500/", with: "/w780/")
+            heroURL = URL(string: big)
+        } else if heroURL == nil, !hit.backdrop.isEmpty {
+            heroURL = URL(string: hit.backdrop)
         }
     }
 }
