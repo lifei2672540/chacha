@@ -104,6 +104,39 @@ final class Store: ObservableObject {
             UserDefaults.standard.removeObject(forKey: "tmdbCache")
         }
     }
+    /// 新版影视界面（蚂蚁 2.0.6 同款开关）：开 = 沉浸式首页 + 玻璃底栏，关 = 恢复旧版首页。
+    var newHomeUI: Bool {
+        get { UserDefaults.standard.object(forKey: "newHomeUI") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "newHomeUI") }
+    }
+    /// 启用 TMDB 资料（关了全不走 TMDB，只用接口自带海报和资料）。
+    var tmdbEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: "tmdbEnabled") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "tmdbEnabled") }
+    }
+    /// 首页与搜索卡片匹配 TMDB（默认关：用影视源海报；开后匹配首页卡片图片与搜索结果的海报、评分等资料）。
+    var tmdbMatchCards: Bool {
+        get { UserDefaults.standard.bool(forKey: "tmdbMatchCards") }
+        set { UserDefaults.standard.set(newValue, forKey: "tmdbMatchCards") }
+    }
+    /// 详情页海报背景（关了用默认主题背景，不用影视海报）。
+    var detailPosterBackdrop: Bool {
+        get { UserDefaults.standard.object(forKey: "detailPosterBackdrop") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "detailPosterBackdrop") }
+    }
+    /// TMDB 地址（蚂蚁同款默认 http://api.tmdb.org；根地址或含 /3 的地址都行）。
+    var tmdbApiBase: String {
+        get { UserDefaults.standard.string(forKey: "tmdbApiBase") ?? "http://api.tmdb.org" }
+        set { UserDefaults.standard.set(newValue, forKey: "tmdbApiBase") }
+    }
+    var tmdbImageBase: String {
+        get { UserDefaults.standard.string(forKey: "tmdbImageBase") ?? "http://images.tmdb.org/t/p" }
+        set { UserDefaults.standard.set(newValue, forKey: "tmdbImageBase") }
+    }
+    var tmdbLanguage: String {
+        get { UserDefaults.standard.string(forKey: "tmdbLanguage") ?? "zh-CN" }
+        set { UserDefaults.standard.set(newValue, forKey: "tmdbLanguage") }
+    }
     func tmdbCacheGet(_ key: String) -> (String, String)? {
         let d = UserDefaults.standard.dictionary(forKey: "tmdbCache") as? [String: [String]] ?? [:]
         guard let v = d[key], v.count >= 2 else { return nil }
