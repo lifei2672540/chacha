@@ -1,12 +1,13 @@
 import SwiftUI
 import UIKit
 
-/// 首页顶部档位（截图顺序）：关注 = 本机关注的剧；漫剧 = 源内分类浏览；推荐 = 竖屏 Feed；继续 = 本机继续观看。
+/// 首页顶部档位（截图顺序）：关注 = 本机关注的剧；漫剧 = 源内分类浏览；推荐 = 竖屏 Feed；继续 = 本机继续观看；TG = 家里 Telegram 采集端。
 enum TopTab: String, CaseIterable {
     case follow = "关注"
     case category = "漫剧"
     case recommend = "推荐"
     case resume = "继续"
+    case tg = "TG"
 }
 
 @MainActor
@@ -352,6 +353,8 @@ struct FeedView: View {
                     })
                 case .resume:
                     ResumeList(vm: vm)
+                case .tg:
+                    TgHomeView()
                 }
             }
         }
