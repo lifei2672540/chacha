@@ -56,6 +56,14 @@ actor TGProgressiveStore {
     let sidecarURL: URL
     private var intervals: [Range<Int>] = []
     private var total: Int = -1
+    /// Read-ahead: segment starts currently being prefetched in the background.
+    /// One segment is fetched on demand; these extra ones download concurrently
+    /// so playback stays ahead of a slow link. A prefetched segment that is
+    /// never played is just wasted bandwidth, bounded by `prefetchCount`.
+    /// Prefetch tasks hold `self` weakly and exit when the store is gone,
+    /// so no explicit cancellation is needed on teardown.
+    private var prefetching: Set<Int> = []
+    private static let prefetchCount = 2
     private var onProgress: (@MainActor (Int, Int) -> Void)?
     private let session: URLSession
 
@@ -85,9 +93,10 @@ actor TGProgressiveStore {
 
     func downloadedBytes() -> Int { intervals.reduce(0) { $0 + $1.count } }
 
-    /// 确保 range 全在缓存里，然后从文件读出来。缺失的洞按 2MB 切分补齐；
+    /// 确保 range 全在缓存里，然后从文件读出来。缺失的洞按 512KB 切分补齐；
     /// 每补一段失败重试 4 次，仍失败则抛错（上层按播放失败处理）。
     /// range 超出文件尾时截到 total 内（超出的部分本就不存在）；完全在尾外则抛 416。
+    /// 补齐后顺手预取后面两段（并发下），让下载跑在播放前面。
     func bytes(for range: Range<Int>) async throws -> Data {
         var effective = range
         if total > 0 { effective = range.lowerBound..<min(range.upperBound, total) }
@@ -106,7 +115,35 @@ actor TGProgressiveStore {
                 }
             }
         }
+        prefetchAhead(from: effective.upperBound)
         return try read(effective)
+    }
+
+    /// Fetch the next `prefetchCount` segments past `offset` concurrently,
+    /// so the download runs ahead of playback. Failures are swallowed:
+    /// the on-demand fetch retries the segment later.
+    private func prefetchAhead(from offset: Int) {
+        guard total > 0 else { return }
+        var start = ((offset + TGCache.segment - 1) / TGCache.segment) * TGCache.segment
+        var n = 0
+        while n < Self.prefetchCount, start < total {
+            let segStart = start
+            let segEnd = min(segStart + TGCache.segment, total)
+            if !isCovered(segStart..<segEnd), !prefetching.contains(segStart) {
+                prefetching.insert(segStart)
+                Task { [weak self] in
+                    guard let self else { return }
+                    do {
+                        try await self.fetchSegment(segStart..<segEnd)
+                    } catch {
+                        // Prefetch failure is not fatal; on-demand fetch retries later.
+                    }
+                    self.prefetching.remove(segStart)
+                }
+                n += 1
+            }
+            start += TGCache.segment
+        }
     }
 
     private func isCovered(_ range: Range<Int>) -> Bool {
