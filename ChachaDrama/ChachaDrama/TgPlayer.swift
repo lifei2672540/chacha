@@ -115,7 +115,10 @@ actor TGProgressiveStore {
                 }
             }
         }
-        prefetchAhead(from: effective.upperBound)
+        // Read-ahead prefetch is DISABLED (1.2.6): the 1.2.5 concurrent prefetch
+        // made playback fail outright on device (no buffering at all), so the
+        // store is back to on-demand fetching only. prefetchAhead stays in
+        // the file, unused, until the failure is reproduced and understood.
         return try read(effective)
     }
 
