@@ -31,9 +31,22 @@ struct PlayerLayerView: UIViewRepresentable {
 }
 
 /// 转屏：全屏横屏视频时转到横屏，退出全屏时转回竖屏。
-/// App 已在 Info.plist 声明支持横屏，setValue 是 iOS 上通用的转屏做法。
+/// App 已在 Info.plist 声明支持横屏。
+/// 优先用 iOS 16+ 的 requestGeometryUpdate（系统正规接口）；老办法 UIDevice.setValue
+/// 在新系统上经常转不动，只当回退。
 enum ScreenRotation {
     static func rotate(to orientation: UIInterfaceOrientation) {
+        let mask: UIInterfaceOrientationMask = orientation.isLandscape ? .landscapeRight : .portrait
+        if let scene = UIApplication.shared.connectedScenes.first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene {
+            scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { _ in
+                rotateLegacy(to: orientation)
+            }
+            return
+        }
+        rotateLegacy(to: orientation)
+    }
+
+    private static func rotateLegacy(to orientation: UIInterfaceOrientation) {
         UIDevice.current.setValue(orientation.rawValue, forKey: "orientation")
         UIViewController.attemptRotationToDeviceOrientation()
     }
@@ -51,6 +64,8 @@ final class FeedPlayerModel: ObservableObject {
     @Published var currentTime: Double = 0
     @Published var isPlaying = false
     @Published var gravity: AVLayerVideoGravity = .resizeAspectFill
+    /// 视频是不是横屏（按实际尺寸定，全屏转屏就看它，不看 gravity）。
+    @Published var isLandscape = false
     var onEnded: (() -> Void)?
 
     private var item: AVPlayerItem?
@@ -81,6 +96,7 @@ final class FeedPlayerModel: ObservableObject {
         currentTime = 0
         isPlaying = false
         gravity = .resizeAspectFill
+        isLandscape = false
         ready = false
         curEpId = episode.id
         curDrama = drama
@@ -148,6 +164,7 @@ final class FeedPlayerModel: ObservableObject {
             let size = it.presentationSize
             if size.width > 0, size.height > 0 {
                 gravity = size.height >= size.width ? .resizeAspectFill : .resizeAspect
+                isLandscape = size.width > size.height
             }
             if resumeFrom > 5,
                let dur = player?.currentItem?.duration.seconds, dur.isFinite,
