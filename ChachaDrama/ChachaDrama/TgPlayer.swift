@@ -343,6 +343,8 @@ final class TgPlayerModel: ObservableObject {
     @Published var currentTime: Double = 0
     @Published var isPlaying = false
     @Published var gravity: AVLayerVideoGravity = .resizeAspectFill
+    /// 视频是不是横屏（按实际尺寸定，播放页转屏就看它，不看 gravity）。
+    @Published var isLandscape = false
     @Published var cacheProgress: Double?
     @Published var cacheMB: Double = 0
     @Published var currentIndex = 0
@@ -394,6 +396,7 @@ final class TgPlayerModel: ObservableObject {
         currentTime = 0
         isPlaying = false
         gravity = .resizeAspectFill
+        isLandscape = false
         cacheProgress = nil
         cacheMB = 0
         ready = false
@@ -456,6 +459,7 @@ final class TgPlayerModel: ObservableObject {
             let size = it.presentationSize
             if size.width > 0, size.height > 0 {
                 gravity = size.height >= size.width ? .resizeAspectFill : .resizeAspect
+                isLandscape = size.width > size.height
             }
             if resumeFrom > 5,
                let dur = player?.currentItem?.duration.seconds, dur.isFinite,
