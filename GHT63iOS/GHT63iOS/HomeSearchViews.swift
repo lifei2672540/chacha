@@ -164,6 +164,8 @@ struct HomeView: View {
                 RecentDetailLoader(recent: r)
             }
         }
+        // 底栏藏掉（写在 TabView 上不生效，1.3.0 的教训）；栈里推出的详情页也一样藏。
+        .toolbar(.hidden, for: .tabBar)
         .task { await data.load() }
     }
 }
@@ -647,6 +649,8 @@ struct SearchView: View {
             .navigationTitle("搜索")
             .navigationDestination(for: VodGroup.self) { g in DetailView(group: g) }
         }
+        // 底栏藏掉（写在 TabView 上不生效，1.3.0 的教训）。
+        .toolbar(.hidden, for: .tabBar)
     }
 
     private func search(reset: Bool) async {
