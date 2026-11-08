@@ -174,7 +174,9 @@ enum TgAPI {
 
     static func getShowDetail(show: TgShow) async throws -> TgShowDetail {
         let root = try await getJSON("\(baseUrl)/api/shows/\(show.id)")
-        guard let s = show(from: root) else {
+        // 参数名 show 会盖住下面同名的静态解析函数 show(from:)，
+        // 这里必须写全 TgAPI.show(from:) 才能调到它。
+        guard let s = TgAPI.show(from: root) else {
             throw NSError(domain: "TG", code: -1, userInfo: [NSLocalizedDescriptionKey: "剧详情解析失败"])
         }
         let eps = ((root["episodes"] as? [[String: Any]]) ?? []).compactMap { video(from: $0) }
