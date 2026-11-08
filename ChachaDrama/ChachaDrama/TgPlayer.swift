@@ -6,7 +6,7 @@ import SwiftUI
 // 未完成的文件留 .part 续传，完工的文件才改名进缓存，缓存文件恒为完整文件。
 
 enum TGCache {
-    static let segment = 2 * 1024 * 1024
+    static let segment = 512 * 1024
     static let cap: Int64 = 2_000_000_000
 
     static var dir: URL {
@@ -67,7 +67,7 @@ actor TGProgressiveStore {
         self.onProgress = onProgress
         let cfg = URLSessionConfiguration.default
         cfg.timeoutIntervalForRequest = 30
-        cfg.timeoutIntervalForResource = 120
+        cfg.timeoutIntervalForResource = 600
         self.session = URLSession(configuration: cfg)
         let fm = FileManager.default
         if fm.fileExists(atPath: finalURL.path) {
@@ -244,6 +244,11 @@ final class TGResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
         tasks.forEach { $0.cancel() }
     }
 
+    /// 先取头一段（建播放器之前调）：首段到手后，播放器的首批请求直接读本地，不用等采集端。
+    func prefetchHead() async throws {
+        _ = try await store.bytes(for: 0..<TGCache.segment)
+    }
+
     func resourceLoader(_ resourceLoader: AVAssetResourceLoader, shouldWaitForLoadingOfRequestedResource loadingRequest: AVAssetResourceLoadingRequest) -> Bool {
         let task = Task { [weak self] in
             await self?.serve(loadingRequest)
@@ -360,6 +365,7 @@ final class TgPlayerModel: ObservableObject {
     private var endObs: NSObjectProtocol?
     private var timeObs: Any?
     private var watchdog: Task<Void, Never>?
+    private var prefetchTask: Task<Void, Never>?
     private var tgLoader: TGResourceLoader?
     private var lastSave = Date.distantPast
     private var ready = false
@@ -417,10 +423,25 @@ final class TgPlayerModel: ObservableObject {
             self?.cacheProgress = total > 0 ? Double(done) / Double(total) : -1
         })
         tgLoader = loader
+        // 先把头一段取回来再建播放器：采集端取流慢时，AVPlayer 等首段的耐心只有几十秒，
+        // 空手建播放器会一上来就超时失败；先取好再建，建完立刻就能播。
         let assetURL = URL(string: "tgcache://\(TGCache.fileName(for: url.absoluteString))")!
-        let asset = AVURLAsset(url: assetURL)
-        asset.resourceLoader.setDelegate(loader, queue: TGResourceLoader.queue)
-        playItem(AVPlayerItem(asset: asset))
+        prefetchTask?.cancel()
+        prefetchTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await loader.prefetchHead()
+                guard !Task.isCancelled else { return }
+                let asset = AVURLAsset(url: assetURL)
+                asset.resourceLoader.setDelegate(loader, queue: TGResourceLoader.queue)
+                self.playItem(AVPlayerItem(asset: asset))
+            } catch {
+                guard !Task.isCancelled else { return }
+                self.loading = false
+                self.cacheProgress = nil
+                self.error = "取流失败：" + error.localizedDescription + "，点重试再试一次"
+            }
+        }
     }
 
     private func playItem(_ it: AVPlayerItem) {
@@ -567,6 +588,8 @@ final class TgPlayerModel: ObservableObject {
     private func cleanupItem() {
         watchdog?.cancel()
         watchdog = nil
+        prefetchTask?.cancel()
+        prefetchTask = nil
         statusObs?.invalidate()
         statusObs = nil
         if let o = endObs {
