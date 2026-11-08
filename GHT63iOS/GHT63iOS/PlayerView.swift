@@ -234,7 +234,8 @@ final class PlayerModel: ObservableObject {
             } else if it.status == .readyToPlay {
                 Task { @MainActor in
                     self?.watchdog?.cancel()
-                    if let d = it.duration.seconds, d.isFinite { self?.duration = d }
+                    let d = it.duration.seconds
+                    if d.isFinite { self?.duration = d }
                 }
             }
         }
