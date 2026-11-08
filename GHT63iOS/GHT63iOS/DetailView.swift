@@ -165,6 +165,8 @@ struct DetailView: View {
     }
 
     private func loadBackdrop() async {
+        // 详情页海报背景开关（设置 → 观看体验 → 视频设置）：关了不用影视海报。
+        guard await Store.shared.detailPosterBackdrop else { return }
         guard backdrop == nil else { return }
         if let hit = await TmdbApi.lookup(title: group.name, year: group.year), !hit.backdrop.isEmpty {
             backdrop = hit.backdrop
