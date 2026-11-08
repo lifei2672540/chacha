@@ -203,6 +203,12 @@ struct EmbyView: View {
 
 // MARK: - 设置
 
+/// 设置页分区头（米色底上的深灰小字）：颜色写死，不跟随深浅模式 ——
+/// 1.3.1 的教训：tab 级 preferredColorScheme 只改了状态栏，系统默认分区头还是白字。
+private func settingsHeader(_ title: String) -> some View {
+    Text(title).font(.footnote).foregroundColor(Color(red: 0.45, green: 0.44, blue: 0.42))
+}
+
 struct SettingsView: View {
     @AppStorage("serverBase") private var serverBase = "http://test.lifei555.cloudns.be/点播"
     @AppStorage("tgBase") private var tgBase = "http://192.168.31.254:8899"
@@ -234,17 +240,20 @@ struct SettingsView: View {
                         }
                     }
                 }
-                Section("服务器（不要带 /index.html）") {
+                .listRowBackground(Color.white)
+                Section(header: settingsHeader("服务器（不要带 /index.html）")) {
                     TextField("服务器地址", text: $serverBase)
                         .autocapitalization(.none).disableAutocorrection(true)
                 }
-                Section("Telegram 采集端（软路由，首页 Telegram 入口用它）") {
+                .listRowBackground(Color.white)
+                Section(header: settingsHeader("Telegram 采集端（软路由，首页 Telegram 入口用它）")) {
                     TextField("采集端地址", text: $tgBase)
                         .autocapitalization(.none).disableAutocorrection(true)
                     Text("默认软路由 192.168.31.254:8899，改了端口或 IP 后在这里改。")
                         .font(.caption).foregroundColor(.secondary)
                 }
-                Section("Emby（只存本机，不写进代码）") {
+                .listRowBackground(Color.white)
+                Section(header: settingsHeader("Emby（只存本机，不写进代码）")) {
                     TextField("服务器", text: $embyServer)
                         .autocapitalization(.none).disableAutocorrection(true)
                     TextField("用户名", text: $embyUser)
@@ -259,11 +268,13 @@ struct SettingsView: View {
                         savedNote = "Emby 账号已保存"
                     }
                 }
-                Section("PY 自检（阶段 2：桥与纯 Python 依赖）") {
+                .listRowBackground(Color.white)
+                Section(header: settingsHeader("PY 自检（阶段 2：桥与纯 Python 依赖）")) {
                     Text(pyTestResult).font(.caption).foregroundColor(.secondary)
                     Button("跑一次自检") { runPySelfTest() }
                 }
-                Section("报错日志（TV 版同款，存到你自己服务器 upde/）") {
+                .listRowBackground(Color.white)
+                Section(header: settingsHeader("报错日志（TV 版同款，存到你自己服务器 upde/）")) {
                     Text(logUploadResult.isEmpty ? "播放出问题、闪退、自检失败都记在这里，上传后我能直接看到。" : logUploadResult)
                         .font(.caption).foregroundColor(.secondary)
                     Button("上传报错日志") {
@@ -277,16 +288,21 @@ struct SettingsView: View {
                         logUploadResult = "本地日志已清空"
                     }
                 }
+                .listRowBackground(Color.white)
                 Section {
                     Text("端侧 PY 正在接入：解释器与蜘蛛桥已就绪，订阅浏览界面下一阶段来；Jar 不在 iOS 路线内。")
                         .font(.caption).foregroundColor(.secondary)
-                    Text("茶茶点播 iOS 1.3.1（原生版）").font(.caption).foregroundColor(.secondary)
+                    Text("茶茶点播 iOS 1.3.2（原生版）").font(.caption).foregroundColor(.secondary)
                     Text("内嵌 Python：\(PyRuntime.version)").font(.caption).foregroundColor(.secondary)
                     if !savedNote.isEmpty { Text(savedNote).font(.caption).foregroundColor(.green) }
                 }
+                .listRowBackground(Color.white)
             }
             .scrollContentBackground(.hidden)
             .background(cream)
+            .toolbarBackground(cream, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(.light, for: .navigationBar)
             .navigationTitle("设置")
             .onAppear {
                 embyServer = EmbyApi.server
@@ -294,8 +310,11 @@ struct SettingsView: View {
                 embyPw = EmbyApi.password
             }
         }
-        // 底栏藏掉（写在 TabView 上不生效，1.3.0 的教训）；浅色由 tab 级别定（GHT63App）。
+        // 底栏藏掉（写在 TabView 上不生效，1.3.0 的教训）。
+        // 浅色必须在这里强制：tab 级的 preferredColorScheme 只改了状态栏，
+        // Form/导航栏还按深色渲染（1.3.1 的教训）—— 环境浅色 + 每行的白底才真生效。
         .toolbar(.hidden, for: .tabBar)
+        .environment(\.colorScheme, .light)
     }
 
     // MARK: - PY 自检（阶段 2 验收：订阅拉取 + 首个 PY 源的 homeContent）
@@ -435,6 +454,7 @@ struct ViewingExperienceView: View {
                     }
                 }
             }
+            .listRowBackground(Color.white)
             Section {
                 Toggle(isOn: $newHomeUI) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -457,7 +477,8 @@ struct ViewingExperienceView: View {
                     }
                 }
             }
-            Section(header: Text("视频设置")) {
+            .listRowBackground(Color.white)
+            Section(header: settingsHeader("视频设置")) {
                 Toggle(isOn: $detailPosterBackdrop) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("详情页海报背景")
@@ -466,9 +487,14 @@ struct ViewingExperienceView: View {
                     }
                 }
             }
+            .listRowBackground(Color.white)
         }
         .scrollContentBackground(.hidden)
         .background(cream)
+        .toolbarBackground(cream, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarColorScheme(.light, for: .navigationBar)
+        .environment(\.colorScheme, .light)
         .navigationTitle("观看体验")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -494,6 +520,7 @@ struct TmdbConfigView: View {
                 Text("海报、背景、剧情与剧集预览\n优先展示 TMDB 匹配资料；未匹配或连接失败时使用接口信息。播放线路仍由影视接口提供。")
                     .font(.caption).foregroundColor(.secondary)
             }
+            .listRowBackground(Color.white)
             Section {
                 Toggle("启用 TMDB 资料", isOn: $tmdbEnabled)
                 Toggle(isOn: $tmdbMatchCards) {
@@ -504,7 +531,8 @@ struct TmdbConfigView: View {
                     }
                 }
             }
-            Section(header: Text("连接配置")) {
+            .listRowBackground(Color.white)
+            Section(header: settingsHeader("连接配置")) {
                 HStack {
                     Text("API 地址")
                     TextField("http://api.tmdb.org", text: $apiBase)
@@ -541,6 +569,7 @@ struct TmdbConfigView: View {
                         .multilineTextAlignment(.trailing)
                 }
             }
+            .listRowBackground(Color.white)
             Section {
                 Button("保存配置") {
                     Store.shared.tmdbApiBase = apiBase.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -565,13 +594,19 @@ struct TmdbConfigView: View {
                     Text(note).font(.caption).foregroundColor(.green)
                 }
             }
+            .listRowBackground(Color.white)
             Section {
                 Text("影视资料来自 TMDB。本应用使用 TMDB API，但未获得 TMDB 的认可或认证。")
                     .font(.caption).foregroundColor(.secondary)
             }
+            .listRowBackground(Color.white)
         }
         .scrollContentBackground(.hidden)
         .background(cream)
+        .toolbarBackground(cream, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarColorScheme(.light, for: .navigationBar)
+        .environment(\.colorScheme, .light)
         .navigationTitle("TMDB 资料配置")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
