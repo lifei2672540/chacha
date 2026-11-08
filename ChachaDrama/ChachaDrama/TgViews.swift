@@ -4,7 +4,9 @@ import CoreImage
 // MARK: - Telegram 短剧（采集端 tg_collect：剧聚合 + 频道 + 收藏/继续观看 + 频道管理 + 扫码登录）
 // 入口是首页顶部第 5 个档位“TG”。播放走 TgPlayerModel（边下边播，茶茶点播 1.2.7 同款）。
 
-private struct TgPlayTarget: Identifiable {
+/// 播哪个：集列表 + 起播下标 + 剧信息。必须是 internal：TgShowDetailView / TgBrowseView
+/// 的 @Binding 属性要公开它的类型，private 会报“property must be declared fileprivate”。
+struct TgPlayTarget: Identifiable {
     var id: String { showId + "|" + (episodes.indices.contains(index) ? episodes[index].id : "\(index)") }
     var episodes: [TgVideo]
     var index: Int
