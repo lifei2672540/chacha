@@ -39,6 +39,13 @@ final class PlayerModel: ObservableObject {
     private var cloud: [String: ProgressRec] = [:]
     private var started = false
     private var watchdog: Task<Void, Never>?
+    /// 卡顿看门狗（网页版同款）：播起来后每 4 秒看一次进度，连续 3 次（12 秒）没动
+    /// 就重载当前地址，最多 2 次；再卡就走失败流程（代理/换线路）。只对 CMS/Emby 生效：
+    /// PY 重解析成本高、TG 有自己的取流重试，不参与。
+    private var stallTask: Task<Void, Never>?
+    private var lastStallCheckTime: Double = -1
+    private var stallCount = 0
+    private var reloadCount = 0
     private var pyTask: Task<Void, Never>?
     private var sniffTask: Task<Void, Never>?
     private var tgLoader: TGResourceLoader?
@@ -108,6 +115,7 @@ final class PlayerModel: ObservableObject {
         bufferedAhead = 0
         watchdog?.cancel()
         sniffTask?.cancel()
+        stallTask?.cancel()
         if isPY {
             pyTask?.cancel()
             pyTask = Task { await buildPlayPY() }
@@ -257,14 +265,51 @@ final class PlayerModel: ObservableObject {
         }
         // 看门狗：还不出画面就按失败处理（走代理/换线路/报错），不许静默黑屏。
         // TG 流要经采集端现从 Telegram 取文件（探头 + 尾部 moov 两次慢取），15 秒不够，
-        // 仅 TG 放宽到 60 秒，其余源保持 15 秒。
-        let timeoutSec: UInt64 = isTG ? 60 : 15
+        // 仅 TG 放宽到 60 秒；其余源 30 秒（网页版播放器没有总时限、失败一直重试，
+        // App 15 秒在慢网下连首段都等不到就误判直连失败，30 秒才够 720p 首段缓冲）。
+        let timeoutSec: UInt64 = isTG ? 60 : 30
         watchdog = Task { @MainActor in
             try? await Task.sleep(nanoseconds: timeoutSec * 1_000_000_000)
             guard !Task.isCancelled else { return }
             if player.currentItem?.status != .readyToPlay {
                 ErrorLog.append("加载超时 \(timeoutSec)s \(group.name) - \(currentEp.title)")
                 handleError()
+            }
+        }
+        // 卡顿看门狗（网页版 watchdogTick 同款）：播起来后每 4 秒看一次进度，
+        // 连续 3 次（12 秒）没动就重载当前地址，最多 2 次；再卡走失败流程。
+        // 只对 CMS/Emby 生效（PY 重解析成本高、TG 有自己的取流重试）。
+        stallTask?.cancel()
+        stallCount = 0; lastStallCheckTime = -1
+        if !isPY && !isTG {
+            stallTask = Task { @MainActor [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 4_000_000_000)
+                    guard let self, !Task.isCancelled else { return }
+                    guard let item = self.player.currentItem, item.status == .readyToPlay else { continue }
+                    let t = self.player.currentTime().seconds
+                    guard t.isFinite else { continue }
+                    if self.lastStallCheckTime >= 0, abs(t - self.lastStallCheckTime) < 0.05, self.player.rate > 0 {
+                        self.stallCount += 1
+                        if self.stallCount >= 3 {
+                            self.stallCount = 0
+                            if self.reloadCount < 2 {
+                                self.reloadCount += 1
+                                self.notice = "检测到卡顿，正在重新加载…"
+                                ErrorLog.append("卡顿重载 \(self.reloadCount)/2 \(self.group.name) - \(self.currentEp.title)")
+                                self.reloadCurrent()
+                                return
+                            } else {
+                                self.stallTask?.cancel()
+                                self.handleError()
+                                return
+                            }
+                        }
+                    } else {
+                        self.stallCount = 0
+                    }
+                    self.lastStallCheckTime = t
+                }
             }
         }
         // 断点：本地与云端取大者（TV 同款，>5 秒才续）
@@ -275,6 +320,12 @@ final class PlayerModel: ObservableObject {
         player.rate = speed
         player.play()
         recordRecent()
+    }
+
+    /// 卡顿重载：同地址重建播放器（不换集、不换线、不重置重载计数）。
+    private func reloadCurrent() {
+        stallTask?.cancel()
+        buildPlay()
     }
 
     private func tick(_ seconds: Double) {
@@ -391,6 +442,7 @@ final class PlayerModel: ObservableObject {
     /// 否则下一源的首线路；无路可走返回 false。注意与 advance() 不同：这里不跳集，
     /// 只换线路——网页线路的同集在下一线路往往就是能播的直链。
     func nextLine() -> Bool {
+        reloadCount = 0
         let lines = group.sources.indices.contains(currentSourceIdx) ? group.sources[currentSourceIdx].lines : []
         let epIdx = lines.indices.contains(currentLineIdx) ? (lines[currentLineIdx].episodes.firstIndex(of: currentEp) ?? 0) : 0
         var nextLine = currentLineIdx + 1
@@ -420,6 +472,7 @@ final class PlayerModel: ObservableObject {
 
     /// PY 解析/播放失败时换线路：同集在下一线路 → 下一源同集（越界取首集）；都没有返回 false。
     private func pyAdvance() -> Bool {
+        reloadCount = 0
         guard let line = currentLine else { return false }
         let epIdx = line.episodes.firstIndex(of: currentEp) ?? 0
         let lines = group.sources[currentSourceIdx].lines
@@ -449,6 +502,7 @@ final class PlayerModel: ObservableObject {
     /// 下一集：同线路下一集 → 下一线路 → 下一源；都没有返回 false。
     @discardableResult
     func advance() -> Bool {
+        reloadCount = 0
         guard let line = currentLine else { return false }
         if let i = line.episodes.firstIndex(of: currentEp), i + 1 < line.episodes.count {
             currentEp = line.episodes[i + 1]
@@ -527,6 +581,7 @@ final class PlayerModel: ObservableObject {
 
     /// 选集：同源同线路换集。
     func jumpToEpisode(_ ep: Episode) {
+        reloadCount = 0
         currentEp = ep
         proxyTried = false; didSeekIntro = false
         buildPlay()
@@ -534,6 +589,7 @@ final class PlayerModel: ObservableObject {
 
     /// 线路表：同集切到指定源/线路（序号越界取首集）。
     func switchLine(sourceIdx: Int, lineIdx: Int) {
+        reloadCount = 0
         guard group.sources.indices.contains(sourceIdx),
               group.sources[sourceIdx].lines.indices.contains(lineIdx) else { return }
         let eps = group.sources[sourceIdx].lines[lineIdx].episodes
@@ -585,6 +641,7 @@ final class PlayerModel: ObservableObject {
     func teardown() {
         watchdog?.cancel()
         sniffTask?.cancel()
+        stallTask?.cancel()
         pyTask?.cancel()
         tgLoader?.cancelAll()
         tgLoader = nil
