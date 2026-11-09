@@ -109,6 +109,16 @@ final class ApiClient {
         }
     }
 
+    /// 采集站分类（内置站按站名问服务端，服务端按名找到站地址后代问本站 ac=list）。
+    func getSiteTypesByName(_ name: String) async throws -> [SiteType] {
+        let q = query([("name", name)])
+        let root = try await getJSON("\(baseUrl)/proxy.php?action=get_site_types&\(q)")
+        return ((root["types"] as? [[String: Any]]) ?? []).compactMap { o in
+            guard let n = o["type_name"] as? String, !n.isEmpty else { return nil }
+            return SiteType(id: o["type_id"] as? Int ?? 0, name: n, pid: o["type_pid"] as? Int ?? 0)
+        }
+    }
+
     // MARK: 追剧
     func getFavorites() async throws -> [FavItem] {
         let root = try await getJSON("\(baseUrl)/proxy.php?action=get_favorites")
