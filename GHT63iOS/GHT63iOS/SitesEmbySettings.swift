@@ -28,6 +28,9 @@ struct SitesView: View {
                                 Text("自定义站").font(.headline).padding(.horizontal)
                                 chipRows(custom)
                             }
+                            // 底栏留空：直接写在滚动内容里（栈上的 safeAreaInset
+                            // 进不了 ScrollView 的底边距，1.4.5 的教训）。
+                            Color.clear.frame(height: 76)
                         }
                         .padding(.vertical)
                     }
@@ -188,6 +191,8 @@ private struct SiteBrowseView: View {
                     .disabled(loading || page >= pageCount)
                 }
                 if let error = error { Text(error).foregroundColor(.red).padding() }
+                // 底栏留空：直接写在滚动内容里（栈上的 safeAreaInset 进不了 ScrollView 的底边距，1.4.5）。
+                Color.clear.frame(height: 76)
             }
         }
         .task {
@@ -248,6 +253,8 @@ struct EmbyView: View {
                         VodGrid(groups: groups).padding()
                         if loading { ProgressView().padding() }
                         if let error = error { Text(error).foregroundColor(.red).padding() }
+                        // 底栏留空：直接写在滚动内容里（栈上的 safeAreaInset 进不了 ScrollView 的底边距，1.4.5）。
+                        Color.clear.frame(height: 76)
                     }
                     .navigationTitle(v.name)
                     .toolbar {
@@ -384,7 +391,7 @@ struct SettingsView: View {
                 Section {
                     Text("端侧 PY 正在接入：解释器与蜘蛛桥已就绪，订阅浏览界面下一阶段来；Jar 不在 iOS 路线内。")
                         .font(.caption).foregroundColor(.secondary)
-                    Text("茶茶点播 iOS 1.4.5（原生版）").font(.caption).foregroundColor(.secondary)
+                    Text("茶茶点播 iOS 1.4.6（原生版）").font(.caption).foregroundColor(.secondary)
                     Text("内嵌 Python：\(PyRuntime.version)").font(.caption).foregroundColor(.secondary)
                     if !savedNote.isEmpty { Text(savedNote).font(.caption).foregroundColor(.green) }
                 }
