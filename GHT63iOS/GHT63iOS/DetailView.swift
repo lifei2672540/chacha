@@ -267,9 +267,13 @@ struct DetailView: View {
                         default: Color.gray.opacity(0.3)
                         }
                     }
+                    // 大图只定高不定宽：横版封面会把整页撑宽、标题和按钮都被拉出屏幕
+                    // （采集站详情页的教训）；宽度顶满，超出的图裁掉。
+                    .frame(maxWidth: .infinity)
                     .frame(height: 440).clipped()
                     LinearGradient(colors: [.clear, .black.opacity(0.15), .black.opacity(0.85)],
                                    startPoint: .top, endPoint: .bottom)
+                        .frame(maxWidth: .infinity)
                         .frame(height: 440)
                     VStack(alignment: .leading, spacing: 6) {
                         Text(group.name).font(.largeTitle.bold()).foregroundColor(.white)
