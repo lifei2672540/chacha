@@ -4,7 +4,66 @@ import Foundation
 /// 年份优先匹配，退回首个带横图的 movie/tv；海报 w500、横图 w1280。
 /// 地址、语言、开关都走设置页（蚂蚁 2.0.6 同款 TMDB 配置页）：根地址或含 /3 的地址都行，
 /// 未启用或没 Key 时直接返回 nil，不发请求；网络失败不写缓存；空串表示查过无匹配。
+/// 趋势榜一项：只有 TMDB 资料（片名/海报/横图/评分），没有播放地址；
+/// 点开后拿片名去自家源里搜（TrendDetailLoader），搜到才进详情。
+struct TmdbTrendItem: Identifiable, Hashable {
+    var id: String
+    var title: String
+    var poster: String
+    var backdrop: String
+    var score: Double
+    var mediaType: String   // movie / tv
+    var year: String
+}
+
 enum TmdbApi {
+    /// 趋势榜（网站首页“趋势 今日”同款）：/trending/all/day，电影+剧集混合取前 10；
+    /// 没开 TMDB、没 Key 或请求失败都返回空，首页回落到源推荐轮播。
+    static func trending() async -> [TmdbTrendItem] {
+        guard await Store.shared.tmdbEnabled else { return [] }
+        let key = await Store.shared.tmdbKey
+        guard !key.isEmpty else { return [] }
+        let apiBase = await Store.shared.tmdbApiBase
+        let imgBase = await Store.shared.tmdbImageBase
+        let lang = await Store.shared.tmdbLanguage
+        var comps = URLComponents(string: apiRoot(base: apiBase) + "/trending/all/day")
+        guard comps != nil else { return [] }
+        comps!.queryItems = [
+            URLQueryItem(name: "api_key", value: key),
+            URLQueryItem(name: "language", value: lang.isEmpty ? "zh-CN" : lang),
+            URLQueryItem(name: "include_adult", value: "false"),
+            URLQueryItem(name: "page", value: "1"),
+        ]
+        guard let url = comps!.url else { return [] }
+        do {
+            let (data, resp) = try await URLSession.shared.data(from: url)
+            guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return [] }
+            let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+            let results = (root["results"] as? [[String: Any]]) ?? []
+            let img = imageRoot(base: imgBase)
+            var out: [TmdbTrendItem] = []
+            for r in results {
+                guard let rawId = r["id"] as? Int else { continue }
+                let mt = (r["media_type"] as? String) ?? ""
+                guard mt == "movie" || mt == "tv" else { continue }
+                let title = (r["title"] as? String) ?? (r["name"] as? String) ?? ""
+                guard !title.isEmpty else { continue }
+                let backdrop = (r["backdrop_path"] as? String).map { "\(img)/w1280\($0)" } ?? ""
+                guard !backdrop.isEmpty else { continue }
+                let poster = (r["poster_path"] as? String).map { "\(img)/w500\($0)" } ?? ""
+                let score = (r["vote_average"] as? Double) ?? 0
+                let date = (r["release_date"] as? String) ?? (r["first_air_date"] as? String) ?? ""
+                out.append(TmdbTrendItem(id: "\(mt)-\(rawId)", title: title, poster: poster,
+                                         backdrop: backdrop, score: score, mediaType: mt,
+                                         year: String(date.prefix(4))))
+                if out.count >= 10 { break }
+            }
+            return out
+        } catch {
+            return []
+        }
+    }
+
     /// 根地址归一化：去掉尾部 /，没有 /3 就补 /3。
     static func apiRoot(base: String) -> String {
         var b = base.trimmingCharacters(in: .whitespacesAndNewlines)
