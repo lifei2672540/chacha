@@ -310,6 +310,8 @@ struct ClassicHomeView: View {
                 if let error = data.error {
                     Text(error).foregroundColor(.red).padding(.horizontal)
                 }
+                // 底栏留空：直接写在滚动内容里（栈上的 safeAreaInset 进不了 ScrollView 的底边距，1.4.5）。
+                Color.clear.frame(height: 76)
             }
             .padding(.vertical)
         }
@@ -580,6 +582,8 @@ struct ImmersiveHomeView: View {
                         if let e = gridError { Text(e).foregroundColor(.red).padding(.horizontal) }
                         if data.loading { ProgressView().frame(maxWidth: .infinity) }
                         if let e = data.error { Text(e).foregroundColor(.red).padding(.horizontal) }
+                        // 底栏留空：直接写在滚动内容里（栈上的 safeAreaInset 进不了 ScrollView 的底边距，1.4.5）。
+                        Color.clear.frame(height: 76)
                     }
                     .padding(.vertical)
                 }
@@ -831,6 +835,8 @@ struct SearchView: View {
                     }
                     if loading { ProgressView().padding() }
                     if let error = error { Text(error).foregroundColor(.red).padding() }
+                    // 底栏留空：直接写在滚动内容里（栈上的 safeAreaInset 进不了 ScrollView 的底边距，1.4.5）。
+                    Color.clear.frame(height: 76)
                 }
             }
             .navigationTitle("搜索")
