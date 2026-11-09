@@ -398,6 +398,8 @@ final class TgPlayerModel: ObservableObject {
     @Published var isLandscape = false
     @Published var cacheProgress: Double?
     @Published var cacheMB: Double = 0
+    /// 无画面时的原因（屏幕上直接显示）：没有视频轨道，或视频编码系统播不了。
+    @Published var videoHint: String?
     @Published var currentIndex = 0
     /// 全部播完（最后一集播完）时回调，View 决定是退出还是提示。
     var onAllEnded: (() -> Void)?
@@ -443,6 +445,7 @@ final class TgPlayerModel: ObservableObject {
         }
         loading = true
         error = nil
+        videoHint = nil
         progress = 0
         duration = 0
         currentTime = 0
@@ -528,6 +531,24 @@ final class TgPlayerModel: ObservableObject {
                 gravity = .resizeAspect
                 isLandscape = size.width > size.height
             }
+            // 视频轨道诊断：有声音没画面时，屏幕上直接报编码（VP9/AV1 等系统播不了的），
+            // 也记进错误日志，方便确认是哪种编码再决定接不接软件解码。
+            let videoTracks = it.asset.tracks(withMediaType: .video)
+            var codec = ""
+            if let vt = videoTracks.first,
+               let fd = vt.formatDescriptions.first as? CMFormatDescription {
+                codec = Self.fourCC(CMFormatDescriptionGetMediaSubType(fd))
+            }
+            let epLabel = currentVideo?.epLabel ?? ""
+            if videoTracks.isEmpty {
+                videoHint = "这条视频没有视频轨道，只有声音"
+                ErrorLog.append("TG无视频轨 \(showName) - \(epLabel)")
+            } else if size.width <= 0 || size.height <= 0 {
+                videoHint = "有声音没画面：视频编码 \(codec.isEmpty ? "未知" : codec)，系统播不了"
+                ErrorLog.append("TG视频轨不可播 \(showName) - \(epLabel) codec=\(codec)")
+            } else {
+                videoHint = nil
+            }
             if resumeFrom > 5,
                let dur = player?.currentItem?.duration.seconds, dur.isFinite,
                resumeFrom < dur - 10 {
@@ -542,6 +563,13 @@ final class TgPlayerModel: ObservableObject {
         default:
             break
         }
+    }
+
+    /// FourCharCode 转成 "avc1"/"vp09" 这样的编码名；非 ASCII 时给十六进制。
+    private static func fourCC(_ code: FourCharCode) -> String {
+        let b: [UInt8] = [UInt8((code >> 24) & 0xff), UInt8((code >> 16) & 0xff),
+                          UInt8((code >> 8) & 0xff), UInt8(code & 0xff)]
+        return String(bytes: b, encoding: .ascii) ?? String(format: "%08X", code)
     }
 
     private func tick(time: CMTime) {
