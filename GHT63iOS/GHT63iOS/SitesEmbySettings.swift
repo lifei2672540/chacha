@@ -71,6 +71,7 @@ private struct SiteBrowseView: View {
     @State private var page = 1
     @State private var pageCount = 1
     @State private var loading = false
+    @State private var loaded = false
     @State private var error: String?
 
     var body: some View {
@@ -124,11 +125,13 @@ private struct SiteBrowseView: View {
             }
         }
         .task {
+            guard !loaded else { return }
             if station.type == "maccms", !station.url.isEmpty {
                 cats = (try? await ApiClient.shared.getSiteTypes(apiUrl: station.url))?.filter { $0.pid == 0 } ?? []
                 if cats.isEmpty { cats = (try? await ApiClient.shared.getSiteTypes(apiUrl: station.url)) ?? [] }
             }
             await browse(reset: true)
+            if error == nil { loaded = true }
         }
     }
 
