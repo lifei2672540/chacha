@@ -23,6 +23,10 @@ final class PlayerModel: ObservableObject {
     @Published var isPlaying: Bool = false
     /// 画面模式：适应（完整显示）/ 填充（裁切铺满），AVPlayerViewController 直接吃。
     @Published var videoGravity: AVLayerVideoGravity = .resizeAspect
+    /// 状态行：视频分辨率 / 实测网速（accessLog 观测码率）/ 已缓冲秒数，每秒刷新。
+    @Published var videoSize: CGSize = .zero
+    @Published var bitrate: Double = 0
+    @Published var bufferedAhead: Double = 0
 
     let player = AVPlayer()
     private var statusObs: NSKeyValueObservation?
@@ -99,6 +103,9 @@ final class PlayerModel: ObservableObject {
         currentTime = 0
         duration = 0
         isPlaying = false
+        videoSize = .zero
+        bitrate = 0
+        bufferedAhead = 0
         watchdog?.cancel()
         sniffTask?.cancel()
         if isPY {
@@ -236,6 +243,8 @@ final class PlayerModel: ObservableObject {
                     self?.watchdog?.cancel()
                     let d = it.duration.seconds
                     if d.isFinite { self?.duration = d }
+                    let s = it.presentationSize
+                    if s.width > 0 && s.height > 0 { self?.videoSize = s }
                 }
             }
         }
@@ -273,6 +282,14 @@ final class PlayerModel: ObservableObject {
         currentTime = seconds
         if let d = player.currentItem?.duration.seconds, d.isFinite { duration = d }
         isPlaying = player.rate > 0
+        // 状态行：分辨率（码流切换会变，每秒重取）、已缓冲秒数、实测网速。
+        if let item = player.currentItem {
+            let s = item.presentationSize
+            if s.width > 0 && s.height > 0 { videoSize = s }
+            let end = item.loadedTimeRanges.compactMap { $0.timeRangeValue }.map { $0.end.seconds }.max() ?? 0
+            bufferedAhead = max(end - seconds, 0)
+            bitrate = item.accessLog()?.events.last?.observedBitrate ?? 0
+        }
         // 缓冲提示只在卡住时留着；播起来了就撤掉（卡住时 rate 为 0，提示继续留着）
         if cacheProgress != nil && player.rate > 0 { cacheProgress = nil }
         guard seconds.isFinite, seconds > 0 else { return }
@@ -956,6 +973,26 @@ struct PlayerView: View {
         model.duration > 0 ? min(max(model.currentTime / model.duration, 0), 1) : 0
     }
 
+    /// 底部状态行：分辨率 · 实测网速 · 已缓冲秒数（取不到时显示 —）。
+    private var statusLine: String {
+        let res: String
+        if model.videoSize.width > 0 && model.videoSize.height > 0 {
+            res = "\(Int(model.videoSize.width))×\(Int(model.videoSize.height))"
+        } else {
+            res = "—"
+        }
+        let bps = model.bitrate
+        let speed: String
+        if bps >= 1_000_000 {
+            speed = String(format: "%.1f MB/s", bps / 8_000_000)
+        } else if bps >= 1_000 {
+            speed = String(format: "%.0f KB/s", bps / 8_000)
+        } else {
+            speed = "—"
+        }
+        return "\(res) · \(speed) · 缓冲 \(Int(model.bufferedAhead))秒"
+    }
+
     private var currentOrientation: UIInterfaceOrientation {
         UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.interfaceOrientation }.first ?? .portrait
     }
@@ -1029,6 +1066,11 @@ struct PlayerView: View {
                             Text(e).foregroundColor(.red)
                             Button("返回") { dismiss() }
                         }
+                        // 状态行：分辨率 · 网速 · 缓冲（跟控制条一起显隐）
+                        Text(statusLine)
+                            .font(.caption)
+                            .foregroundColor(.white.opacity(0.75))
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         // 可拖进度条 + 时间
                         HStack(spacing: 10) {
                             Text(formatTime(seekFraction.map { $0 * model.duration } ?? model.currentTime))
