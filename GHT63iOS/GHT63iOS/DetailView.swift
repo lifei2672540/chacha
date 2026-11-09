@@ -20,6 +20,14 @@ struct DetailView: View {
     @State private var speedTesting = false
     @State private var speedResult: String?
     @State private var speedOK = false
+    /// 全部源测速：每行一条源+线路的速度（nil = 打不开），最快在前。
+    @State private var allSpeedResults: [SpeedResult] = []
+    @State private var allSpeedTesting = false
+    @State private var allSpeedDone = 0
+    @State private var allSpeedTotal = 0
+
+    /// 全部源/线路加起来有几条可测的路线（只有一条时不显示“测全部源”）。
+    private var totalRoutes: Int { group.sources.flatMap { $0.lines }.count }
 
     private var source: VodSource? { group.sources.indices.contains(sourceIdx) ? group.sources[sourceIdx] : nil }
     private var line: PlayLine? {
@@ -83,12 +91,12 @@ struct DetailView: View {
         guard let u = testURL else { return }
         speedTesting = true
         speedResult = nil
-        let (ok, mbps) = await testSpeed(urlString: u)
+        let (ok, mbps) = await Self.testSpeed(urlString: u)
         speedTesting = false
         if ok {
             speedOK = true
             if let m = mbps {
-                speedResult = m >= 1 ? "能看 · \(String(format: "%.1f", m)) MB/s" : "能看 · \(Int(m * 1000)) KB/s"
+                speedResult = "能看 · \(formatSpeed(m))"
             } else {
                 speedResult = "能看 · 速度未知"
             }
@@ -98,9 +106,67 @@ struct DetailView: View {
         }
     }
 
+    /// 速度显示：≥1 用 MB/s，否则用 KB/s。
+    private func formatSpeed(_ mbps: Double) -> String {
+        mbps >= 1 ? String(format: "%.1f MB/s", mbps) : "\(Int(mbps * 1000)) KB/s"
+    }
+
+    /// 测全部源：同一集在每个源每条线路上都测一遍，并行测，最快在前。
+    /// 点结果行就切到那条线路并直接播放（集按地址认源，不会串到别的源）。
+    private func runAllSpeedTest() async {
+        guard let target = resumeEp ?? line?.episodes.first else { return }
+        // 每条线路里找同名集（没有这集的源跳过；同一地址只测一次）。
+        var jobs: [(sourceIdx: Int, lineIdx: Int, label: String, url: String, episode: Episode)] = []
+        var seenURLs: Set<String> = []
+        for (si, s) in group.sources.enumerated() {
+            for (li, l) in s.lines.enumerated() {
+                guard let ep = l.episodes.first(where: { $0.title == target.title }) else { continue }
+                var u = ep.url
+                if u.hasPrefix("emby:") {
+                    guard let real = EmbyApi.streamUrl(group: group, episode: ep) else { continue }
+                    u = real
+                }
+                guard !u.isEmpty, seenURLs.insert(u).inserted else { continue }
+                let lineName = l.label.isEmpty ? "线路\(l.lineIndex)" : l.label
+                jobs.append((si, li, "\(s.sourceLabel) · \(lineName)", u, ep))
+            }
+        }
+        allSpeedResults = []
+        allSpeedDone = 0
+        allSpeedTotal = jobs.count
+        allSpeedTesting = true
+        speedResult = nil
+        let results = await withTaskGroup(of: SpeedResult.self) { g in
+            for job in jobs {
+                g.addTask {
+                    let (ok, mbps) = await Self.testSpeed(urlString: job.url)
+                    return SpeedResult(sourceIdx: job.sourceIdx, lineIdx: job.lineIdx,
+                                       label: job.label, mbps: ok ? mbps : nil, episode: job.episode)
+                }
+            }
+            var out: [SpeedResult] = []
+            for await r in g {
+                out.append(r)
+                allSpeedDone += 1
+            }
+            return out
+        }
+        allSpeedTesting = false
+        // 最快在前，打不开的沉底。
+        allSpeedResults = results.sorted {
+            switch ($0.mbps, $1.mbps) {
+            case let (a?, b?): return a > b
+            case (_?, nil): return true
+            case (nil, _?): return false
+            default: return false
+            }
+        }
+    }
+
     /// 测速：m3u8 先取播放列表、再下首个分片；直链直接下前 1MB；最多 15 秒。
     /// 返回（能看，速度 MB/s；速度测不出时为 nil）。
-    private func testSpeed(urlString: String) async -> (Bool, Double?) {
+    /// static：测全部源时在并发任务里调，不碰页面状态。
+    private static func testSpeed(urlString: String) async -> (Bool, Double?) {
         guard let url = URL(string: urlString) else { return (false, nil) }
         let ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
         let cfg = URLSessionConfiguration.ephemeral
@@ -139,12 +205,12 @@ struct DetailView: View {
             // 跟完还是列表（没找到分片）：地址通、速度测不出。
             if target.absoluteString.lowercased().contains(".m3u8") { return (true, nil) }
         }
-        return await downloadFirstMB(target, ua: ua, session: session)
+        return await Self.downloadFirstMB(target, ua: ua, session: session)
     }
 
     /// 下前 1MB 计时（分片不足 1MB 就整段测；读满即停，不下全文）。
     /// 站不支持 Range 时（416）改不带 Range 重试一次，照样只读 1MB。
-    private func downloadFirstMB(_ url: URL, ua: String, session: URLSession) async -> (Bool, Double?) {
+    private static func downloadFirstMB(_ url: URL, ua: String, session: URLSession) async -> (Bool, Double?) {
         var req = URLRequest(url: url, timeoutInterval: 15)
         req.setValue("bytes=0-1048575", forHTTPHeaderField: "Range")
         req.setValue(ua, forHTTPHeaderField: "User-Agent")
@@ -154,7 +220,7 @@ struct DetailView: View {
             if http.statusCode == 416 {
                 var plain = req
                 plain.setValue(nil, forHTTPHeaderField: "Range")
-                return await downloadFirstMBPlain(plain, session: session)
+                return await Self.downloadFirstMBPlain(plain, session: session)
             }
             guard (200...299).contains(http.statusCode) || http.statusCode == 206 else { return (false, nil) }
             var total = 0
@@ -172,7 +238,7 @@ struct DetailView: View {
     }
 
     /// 不带 Range 下前 1MB（downloadFirstMB 遇 416 时的重试路径）。
-    private func downloadFirstMBPlain(_ req: URLRequest, session: URLSession) async -> (Bool, Double?) {
+    private static func downloadFirstMBPlain(_ req: URLRequest, session: URLSession) async -> (Bool, Double?) {
         do {
             let (bytes, resp) = try await session.bytes(for: req)
             guard let http = resp as? HTTPURLResponse, (200...299).contains(http.statusCode) else { return (false, nil) }
@@ -300,9 +366,41 @@ struct DetailView: View {
                             }
                             .buttonStyle(.bordered)
                             .tint(.gray)
-                            .disabled(speedTesting || testURL == nil)
+                            .disabled(speedTesting || allSpeedTesting || testURL == nil)
+                            if totalRoutes > 1 {
+                                Button(allSpeedTesting ? "测速中 \(allSpeedDone)/\(allSpeedTotal)…" : "测全部源") {
+                                    Task { await runAllSpeedTest() }
+                                }
+                                .buttonStyle(.bordered)
+                                .tint(.gray)
+                                .disabled(speedTesting || allSpeedTesting)
+                            }
                             if let r = speedResult {
                                 Text(r).font(.subheadline).foregroundColor(speedOK ? .green : .red)
+                            }
+                        }
+                        // 全部源测速结果：最快在前，点一行就切到那条线路并直接播放
+                        if !allSpeedResults.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                if let best = allSpeedResults.first, let m = best.mbps {
+                                    Text("推荐：\(best.label) · \(formatSpeed(m))")
+                                        .font(.subheadline).foregroundColor(.green)
+                                }
+                                ForEach(allSpeedResults) { r in
+                                    Button {
+                                        sourceIdx = r.sourceIdx; lineIdx = r.lineIdx; resetEpGroup()
+                                        playEp = r.episode
+                                    } label: {
+                                        HStack {
+                                            Text(r.label).font(.subheadline)
+                                            Spacer()
+                                            Text(r.mbps.map { formatSpeed($0) } ?? "打不开")
+                                                .font(.subheadline)
+                                                .foregroundColor(r.mbps == nil ? .red : .primary)
+                                        }
+                                    }
+                                    .buttonStyle(.plain)
+                                }
                             }
                         }
                     }
@@ -403,6 +501,16 @@ struct DetailView: View {
             heroURL = URL(string: hit.backdrop)
         }
     }
+}
+
+/// 全部源测速的一行结果：某源某线路的同名集、速度（nil = 打不开）。
+struct SpeedResult: Identifiable {
+    var id: String { "\(sourceIdx)-\(lineIdx)" }
+    var sourceIdx: Int
+    var lineIdx: Int
+    var label: String
+    var mbps: Double?
+    var episode: Episode
 }
 
 /// 简单流式 chips（自动换行）。
