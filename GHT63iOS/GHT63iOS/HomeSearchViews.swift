@@ -99,11 +99,15 @@ struct HeroBanner: View {
 
 struct VodGrid: View {
     var groups: [VodGroup]
+    var onLastAppear: (() -> Void)? = nil
     var body: some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 105), spacing: 12)], spacing: 16) {
             ForEach(groups) { g in
                 NavigationLink(value: g) { PosterCard(group: g, width: 110) }
                     .buttonStyle(.plain)
+                    .onAppear {
+                        if g.id == groups.last?.id { onLastAppear?() }
+                    }
             }
         }
     }
