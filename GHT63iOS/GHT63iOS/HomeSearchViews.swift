@@ -114,6 +114,7 @@ struct VodGrid: View {
 @MainActor
 final class HomeData: ObservableObject {
     @Published var cats: [String: [VodGroup]] = [:]
+    @Published var trending: [TmdbTrendItem] = []
     @Published var loading = false
     @Published var error: String?
 
@@ -128,9 +129,11 @@ final class HomeData: ObservableObject {
         do {
             async let cloudProgress = ApiClient.shared.getProgress()
             async let cloudFavs = ApiClient.shared.getFavorites()
+            async let trend = TmdbApi.trending()
             let (cp, cf) = try await (cloudProgress, cloudFavs)
             await MainActor.run { Store.shared.mergeCloudFavorites(cf) }
             _ = cp
+            trending = await trend
             for def in catDefs {
                 let (groups, _, _) = try await ApiClient.shared.search(wd: def.1, type: def.2, pg: 1)
                 cats[def.0] = groups
@@ -159,6 +162,7 @@ struct HomeView: View {
                 }
             }
             .navigationDestination(for: VodGroup.self) { g in DetailView(group: g) }
+            .navigationDestination(for: TmdbTrendItem.self) { t in TrendDetailLoader(item: t) }
             .navigationDestination(for: RecentItem.self) { r in
                 // 最近观看点开：按剧名搜回详情（与 TV 版续播同款思路）
                 RecentDetailLoader(recent: r)
@@ -257,7 +261,8 @@ struct ClassicHomeView: View {
     }
 }
 
-/// 顶部玻璃条：搜索 + 品牌 + 刷新，浮在海报上。
+/// 顶部浮钮：只留搜索和刷新两个小圆钮（不挡海报），标题去掉了；
+/// 搜索也可以走底部“搜索”页，下拉也能刷新。
 private struct TopGlassBar: View {
     var onSearch: () -> Void
     var onRefresh: () -> Void
@@ -270,8 +275,6 @@ private struct TopGlassBar: View {
             }
             .buttonStyle(.plain)
             Spacer()
-            Text("茶茶点播").font(.headline.bold()).foregroundColor(.white)
-            Spacer()
             Button(action: onRefresh) {
                 Image(systemName: "arrow.clockwise")
                     .font(.system(size: 18)).foregroundColor(.white)
@@ -280,10 +283,6 @@ private struct TopGlassBar: View {
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.ultraThinMaterial)
-        .cornerRadius(24)
-        .overlay(RoundedRectangle(cornerRadius: 24).stroke(Color.white.opacity(0.15), lineWidth: 1))
     }
 }
 
@@ -330,6 +329,52 @@ private struct HeroCarousel: View {
     }
 }
 
+/// TMDB 趋势轮播：横图全幅铺底 + 底部渐变 + 大标题 + TMDB 评分徽章，点海报按片名去源里搜。
+private struct TrendHeroCarousel: View {
+    var items: [TmdbTrendItem]
+    @Binding var selected: Int
+    var body: some View {
+        TabView(selection: $selected) {
+            ForEach(items.indices, id: \.self) { i in
+                let t = items[i]
+                NavigationLink(value: t) {
+                    ZStack(alignment: .bottomLeading) {
+                        AsyncImage(url: URL(string: t.backdrop)) { phase in
+                            switch phase {
+                            case .success(let img): img.resizable().scaledToFill()
+                            default: Color.gray.opacity(0.3)
+                            }
+                        }
+                        .frame(height: 520)
+                        .clipped()
+                        LinearGradient(colors: [.clear, .black.opacity(0.9)], startPoint: .center, endPoint: .bottom)
+                            .frame(height: 520)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(t.title).font(.largeTitle.bold()).foregroundColor(.white).lineLimit(1)
+                            HStack(spacing: 8) {
+                                if t.score > 0 {
+                                    Text(String(format: "TMDB %.1f", t.score))
+                                        .font(.caption.bold()).foregroundColor(.white)
+                                        .padding(.horizontal, 8).padding(.vertical, 3)
+                                        .background(Color.teal).cornerRadius(10)
+                                }
+                                Text([(t.mediaType == "tv" ? "剧集" : "电影"), t.year].filter { !$0.isEmpty }.joined(separator: " · "))
+                                    .font(.subheadline).foregroundColor(.white.opacity(0.7))
+                            }
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 28)
+                    }
+                }
+                .buttonStyle(.plain)
+                .tag(i)
+            }
+        }
+        .tabViewStyle(.page(indexDisplayMode: .never))
+        .frame(height: 520)
+    }
+}
+
 /// 新版沉浸式首页（蚂蚁 2.0.6 海报 UI 同款）：海报轮播 + 圆点 + 分类胶囊 +
 /// 继续观看 + 我的追剧 + PY/TG 入口 + 分类网格；顶部玻璃条浮在海报上。
 struct ImmersiveHomeView: View {
@@ -347,6 +392,7 @@ struct ImmersiveHomeView: View {
 
     private let chips = [("全部", ""), ("电视剧", "2"), ("电影", "1"), ("综艺", "3"), ("动漫", "4")]
     private var heroes: [VodGroup] { Array((data.cats["今日热播"] ?? []).prefix(5)) }
+    private var trendHeroes: [TmdbTrendItem] { Array(data.trending.prefix(5)) }
     private var favGroups: [VodGroup] {
         store.favorites.map { f in
             VodGroup(name: f.name, pic: f.pic, typeName: "", year: "", content: "", sources: [])
@@ -358,7 +404,17 @@ struct ImmersiveHomeView: View {
             ZStack(alignment: .top) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
-                        if !heroes.isEmpty {
+                        if !trendHeroes.isEmpty {
+                            TrendHeroCarousel(items: trendHeroes, selected: $heroIdx)
+                            HStack(spacing: 6) {
+                                ForEach(trendHeroes.indices, id: \.self) { i in
+                                    Capsule()
+                                        .fill(i == heroIdx ? Color.white : Color.white.opacity(0.35))
+                                        .frame(width: i == heroIdx ? 22 : 7, height: 7)
+                                }
+                            }
+                            .frame(maxWidth: .infinity)
+                        } else if !heroes.isEmpty {
                             HeroCarousel(groups: heroes, backdrops: backdrops, selected: $heroIdx)
                             HStack(spacing: 6) {
                                 ForEach(heroes.indices, id: \.self) { i in
@@ -574,6 +630,33 @@ private struct RecentDetailLoader: View {
                 let (groups, _, _) = try await ApiClient.shared.search(wd: recent.drama, type: "", pg: 1)
                 group = groups.first { $0.name == recent.drama } ?? groups.first
                 if group == nil { error = "没搜到这部剧" }
+            } catch {
+                self.error = "加载失败：\(error.localizedDescription)"
+            }
+        }
+    }
+}
+
+/// 趋势轮播点开：TMDB 只有资料没有播放地址，按片名去自家源里搜第一条进详情。
+private struct TrendDetailLoader: View {
+    var item: TmdbTrendItem
+    @State private var group: VodGroup?
+    @State private var error: String?
+    var body: some View {
+        Group {
+            if let group = group {
+                DetailView(group: group)
+            } else if let error = error {
+                Text(error).foregroundColor(.red)
+            } else {
+                ProgressView()
+            }
+        }
+        .task {
+            do {
+                let (groups, _, _) = try await ApiClient.shared.search(wd: item.title, type: "", pg: 1)
+                group = groups.first { $0.name == item.title } ?? groups.first
+                if group == nil { error = "源里没搜到这部" }
             } catch {
                 self.error = "加载失败：\(error.localizedDescription)"
             }
