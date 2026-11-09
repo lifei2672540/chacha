@@ -43,10 +43,13 @@ struct SitesView: View {
         }
         // 底栏藏掉（写在 TabView 上不生效，1.3.0 的教训）。
         .toolbar(.hidden, for: .tabBar)
+        // 给玻璃底栏留空：写在栈上才能进滚动视图的底边距（写 TabView 上传不进去，1.4.3）。
+        .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 76) }
     }
 
     /// 站名排成每行 3 个的按钮阵（不用 LazyVGrid：懒布局在 ScrollView 里
-    /// 量不出整页高度，滑到底一松手就弹回顶部）。
+    /// 量不出整页高度，滑到底一松手就弹回顶部——1.4.3 的旧判断；真因是底边距，
+    /// 见上面 safeAreaInset 的注释，网格本身没问题）。
     private func chipRows(_ stations: [SourceInfo]) -> some View {
         VStack(spacing: 8) {
             ForEach(Array(stride(from: 0, to: stations.count, by: 3)), id: \.self) { start in
@@ -267,6 +270,8 @@ struct EmbyView: View {
         }
         // 底栏藏掉（写在 TabView 上不生效，1.3.0 的教训）。
         .toolbar(.hidden, for: .tabBar)
+        // 给玻璃底栏留空：写在栈上才能进滚动视图的底边距（写 TabView 上传不进去，1.4.3）。
+        .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 76) }
     }
 
     private func loadViews() async {
@@ -379,7 +384,7 @@ struct SettingsView: View {
                 Section {
                     Text("端侧 PY 正在接入：解释器与蜘蛛桥已就绪，订阅浏览界面下一阶段来；Jar 不在 iOS 路线内。")
                         .font(.caption).foregroundColor(.secondary)
-                    Text("茶茶点播 iOS 1.4.4（原生版）").font(.caption).foregroundColor(.secondary)
+                    Text("茶茶点播 iOS 1.4.5（原生版）").font(.caption).foregroundColor(.secondary)
                     Text("内嵌 Python：\(PyRuntime.version)").font(.caption).foregroundColor(.secondary)
                     if !savedNote.isEmpty { Text(savedNote).font(.caption).foregroundColor(.green) }
                 }
@@ -401,6 +406,8 @@ struct SettingsView: View {
         // 浅色必须在这里强制：tab 级的 preferredColorScheme 只改了状态栏，
         // Form/导航栏还按深色渲染（1.3.1 的教训）—— 环境浅色 + 每行的白底才真生效。
         .toolbar(.hidden, for: .tabBar)
+        // 给玻璃底栏留空：写在栈上才能进表单的底边距（写 TabView 上传不进去，1.4.3）。
+        .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 76) }
         .environment(\.colorScheme, .light)
     }
 
