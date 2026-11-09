@@ -509,6 +509,17 @@ final class PlayerModel: ObservableObject {
         saveNow(seconds: t)
     }
 
+    /// 快进/快退：一次跳 10 秒（两端夹住，不越界）。
+    func seekBy(_ delta: Double) {
+        guard let it = player.currentItem else { return }
+        let dur = it.duration.seconds
+        var t = currentTime + delta
+        if dur.isFinite && dur > 0 { t = min(max(t, 0), dur) } else { t = max(t, 0) }
+        currentTime = t
+        player.seek(to: CMTime(seconds: t, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        saveNow(seconds: t)
+    }
+
     /// 画面模式：适应（完整显示，不裁切）/ 填充（裁切铺满）来回切。
     func cycleGravity() {
         videoGravity = videoGravity == .resizeAspect ? .resizeAspectFill : .resizeAspect
@@ -1048,13 +1059,27 @@ struct PlayerView: View {
                             .allowsHitTesting(false)
                     )
                     Spacer()
-                    // 中间：播放/暂停
-                    Button(action: { model.togglePlay(); scheduleHide() }) {
-                        Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
-                            .font(.system(size: 54)).foregroundColor(.white.opacity(0.92))
-                            .shadow(radius: 8)
+                    // 中间：快退 10 秒 / 播放暂停 / 快进 10 秒
+                    HStack(spacing: 64) {
+                        Button(action: { model.seekBy(-10); scheduleHide() }) {
+                            Image(systemName: "gobackward.10")
+                                .font(.system(size: 36)).foregroundColor(.white.opacity(0.92))
+                                .shadow(radius: 8)
+                        }
+                        .buttonStyle(.plain)
+                        Button(action: { model.togglePlay(); scheduleHide() }) {
+                            Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
+                                .font(.system(size: 54)).foregroundColor(.white.opacity(0.92))
+                                .shadow(radius: 8)
+                        }
+                        .buttonStyle(.plain)
+                        Button(action: { model.seekBy(10); scheduleHide() }) {
+                            Image(systemName: "goforward.10")
+                                .font(.system(size: 36)).foregroundColor(.white.opacity(0.92))
+                                .shadow(radius: 8)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                     Spacer()
                     // 底部：提示 + 进度条 + 功能行
                     VStack(spacing: 10) {
