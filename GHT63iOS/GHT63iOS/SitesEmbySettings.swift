@@ -8,6 +8,7 @@ struct SitesView: View {
     @State private var custom: [SourceInfo] = []
     @State private var selected: SourceInfo?
     @State private var error: String?
+    @State private var loaded = false
 
     var body: some View {
         NavigationStack {
@@ -21,22 +22,10 @@ struct SitesView: View {
                         VStack(alignment: .leading, spacing: 16) {
                             if let error = error { Text(error).foregroundColor(.red).padding(.horizontal) }
                             Text("内置站").font(.headline).padding(.horizontal)
-                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 8)], spacing: 8) {
-                                ForEach(builtin, id: \.self) { name in
-                                    Button(name) { selected = SourceInfo(name: name, type: "maccms", url: "") }
-                                        .buttonStyle(.bordered)
-                                }
-                            }
-                            .padding(.horizontal)
+                            chipRows(builtin.map { SourceInfo(name: $0, type: "maccms", url: "") })
                             if !custom.isEmpty {
                                 Text("自定义站").font(.headline).padding(.horizontal)
-                                LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 8)], spacing: 8) {
-                                    ForEach(custom) { s in
-                                        Button(s.name) { selected = s }
-                                            .buttonStyle(.bordered)
-                                    }
-                                }
-                                .padding(.horizontal)
+                                chipRows(custom)
                             }
                         }
                         .padding(.vertical)
@@ -44,11 +33,37 @@ struct SitesView: View {
                 }
             }
             .navigationTitle("采集站")
-            .task { await load() }
+            .task {
+                guard !loaded else { return }
+                await load()
+                if error == nil { loaded = true }
+            }
             .navigationDestination(for: VodGroup.self) { g in DetailView(group: g) }
         }
         // 底栏藏掉（写在 TabView 上不生效，1.3.0 的教训）。
         .toolbar(.hidden, for: .tabBar)
+    }
+
+    /// 站名排成每行 3 个的按钮阵（不用 LazyVGrid：懒布局在 ScrollView 里
+    /// 量不出整页高度，滑到底一松手就弹回顶部）。
+    private func chipRows(_ stations: [SourceInfo]) -> some View {
+        VStack(spacing: 8) {
+            ForEach(Array(stride(from: 0, to: stations.count, by: 3)), id: \.self) { start in
+                let end = min(start + 3, stations.count)
+                HStack(spacing: 8) {
+                    ForEach(stations[start..<end]) { s in
+                        Button(s.name) { selected = s }
+                            .buttonStyle(.bordered)
+                            .frame(maxWidth: .infinity)
+                    }
+                    // 补齐最后一行不满 3 个的空位，保证每行三列对齐。
+                    ForEach(0..<(3 - (end - start)), id: \.self) { _ in
+                        Color.clear.frame(maxWidth: .infinity)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal)
     }
 
     private func load() async {
@@ -353,7 +368,7 @@ struct SettingsView: View {
                 Section {
                     Text("端侧 PY 正在接入：解释器与蜘蛛桥已就绪，订阅浏览界面下一阶段来；Jar 不在 iOS 路线内。")
                         .font(.caption).foregroundColor(.secondary)
-                    Text("茶茶点播 iOS 1.4.2（原生版）").font(.caption).foregroundColor(.secondary)
+                    Text("茶茶点播 iOS 1.4.3（原生版）").font(.caption).foregroundColor(.secondary)
                     Text("内嵌 Python：\(PyRuntime.version)").font(.caption).foregroundColor(.secondary)
                     if !savedNote.isEmpty { Text(savedNote).font(.caption).foregroundColor(.green) }
                 }
