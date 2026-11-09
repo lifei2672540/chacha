@@ -162,14 +162,30 @@ enum TgAPI {
     }
 
     // MARK: 剧聚合
-    static func getShows(page: Int, pageSize: Int = 30) async throws -> (Int, [TgShow]) {
+    static func getShows(page: Int, pageSize: Int = 30, channel: String? = nil) async throws -> (Int, [TgShow]) {
         var comps = URLComponents()
-        comps.queryItems = [URLQueryItem(name: "page", value: "\(page)"),
-                            URLQueryItem(name: "page_size", value: "\(pageSize)")]
+        var items = [URLQueryItem(name: "page", value: "\(page)"),
+                     URLQueryItem(name: "page_size", value: "\(pageSize)")]
+        if let ch = channel, !ch.isEmpty {
+            items.append(URLQueryItem(name: "channel", value: ch))
+        }
+        comps.queryItems = items
         let root = try await getJSON("\(baseUrl)/api/shows?\(comps.percentEncodedQuery ?? "")")
         let total = root["total"] as? Int ?? 0
         let shows = ((root["shows"] as? [[String: Any]]) ?? []).compactMap { show(from: $0) }
         return (total, shows)
+    }
+
+    /// 无剧名的单条视频（采集端 /api/singles）：频道页里剧集之外的零散视频。
+    static func getSingles(channel: String, page: Int, pageSize: Int = 30) async throws -> (Int, [TgVideo]) {
+        var comps = URLComponents()
+        comps.queryItems = [URLQueryItem(name: "channel", value: channel),
+                            URLQueryItem(name: "page", value: "\(page)"),
+                            URLQueryItem(name: "page_size", value: "\(pageSize)")]
+        let root = try await getJSON("\(baseUrl)/api/singles?\(comps.percentEncodedQuery ?? "")")
+        let total = root["total"] as? Int ?? 0
+        let items = ((root["items"] as? [[String: Any]]) ?? []).compactMap { video(from: $0) }
+        return (total, items)
     }
 
     static func getShowDetail(show: TgShow) async throws -> TgShowDetail {
