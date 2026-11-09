@@ -2,7 +2,7 @@ import SwiftUI
 
 /// 采集站（TV 版 SitesActivity 的触屏版）：站列表 → 本站分类 → 单站浏览。
 /// 浏览走聚合搜索的 disabled 反选（除本站外全停用），与 TV 同款；
-/// 内置站无地址无分类，只出最新；空站显示“该站暂无内容”。
+/// 内置站无地址，分类走服务端按站名代查；空站显示“该站暂无内容”。
 struct SitesView: View {
     @State private var builtin: [String] = []
     @State private var custom: [SourceInfo] = []
@@ -23,7 +23,7 @@ struct SitesView: View {
                             Text("内置站").font(.headline).padding(.horizontal)
                             LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 8)], spacing: 8) {
                                 ForEach(builtin, id: \.self) { name in
-                                    Button(name) { selected = SourceInfo(name: name, type: "", url: "") }
+                                    Button(name) { selected = SourceInfo(name: name, type: "maccms", url: "") }
                                         .buttonStyle(.bordered)
                                 }
                             }
@@ -133,9 +133,15 @@ private struct SiteBrowseView: View {
         }
         .task {
             guard !loaded else { return }
-            if station.type == "maccms", !station.url.isEmpty {
-                cats = (try? await ApiClient.shared.getSiteTypes(apiUrl: station.url))?.filter { $0.pid == 0 } ?? []
-                if cats.isEmpty { cats = (try? await ApiClient.shared.getSiteTypes(apiUrl: station.url)) ?? [] }
+            if station.type == "maccms" {
+                if !station.url.isEmpty {
+                    cats = (try? await ApiClient.shared.getSiteTypes(apiUrl: station.url))?.filter { $0.pid == 0 } ?? []
+                    if cats.isEmpty { cats = (try? await ApiClient.shared.getSiteTypes(apiUrl: station.url)) ?? [] }
+                } else {
+                    // 内置站无地址：服务端按站名代问本站 ac=list。
+                    cats = (try? await ApiClient.shared.getSiteTypesByName(station.name))?.filter { $0.pid == 0 } ?? []
+                    if cats.isEmpty { cats = (try? await ApiClient.shared.getSiteTypesByName(station.name)) ?? [] }
+                }
             }
             await browse(reset: true)
             if error == nil { loaded = true }
@@ -319,7 +325,7 @@ struct SettingsView: View {
                 Section {
                     Text("端侧 PY 正在接入：解释器与蜘蛛桥已就绪，订阅浏览界面下一阶段来；Jar 不在 iOS 路线内。")
                         .font(.caption).foregroundColor(.secondary)
-                    Text("茶茶点播 iOS 1.4.0（原生版）").font(.caption).foregroundColor(.secondary)
+                    Text("茶茶点播 iOS 1.4.1（原生版）").font(.caption).foregroundColor(.secondary)
                     Text("内嵌 Python：\(PyRuntime.version)").font(.caption).foregroundColor(.secondary)
                     if !savedNote.isEmpty { Text(savedNote).font(.caption).foregroundColor(.green) }
                 }
