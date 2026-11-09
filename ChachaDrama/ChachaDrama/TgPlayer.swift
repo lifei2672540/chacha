@@ -536,7 +536,7 @@ final class TgPlayerModel: ObservableObject {
             let videoTracks = it.asset.tracks(withMediaType: .video)
             var codec = ""
             if let vt = videoTracks.first,
-               let fd = vt.formatDescriptions.first as? CMFormatDescription {
+               let fd = vt.formatDescriptions.first {
                 codec = Self.fourCC(CMFormatDescriptionGetMediaSubType(fd))
             }
             let epLabel = currentVideo?.epLabel ?? ""
