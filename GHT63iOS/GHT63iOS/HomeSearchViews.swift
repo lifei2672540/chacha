@@ -113,6 +113,54 @@ struct VodGrid: View {
     }
 }
 
+/// 网页版分类表（点播 index.html categoryList 同款）：大类 + 子类；
+/// 子类 id 直接当 type 传给搜索接口，keyword 类子类（刑警/缉毒…）走关键词搜索。
+struct WebSubCategory: Hashable {
+    let name: String
+    let typeId: String
+    let keyword: String?
+}
+struct WebCategory: Hashable {
+    let name: String
+    let typeId: String
+    let subs: [WebSubCategory]
+}
+enum WebCategories {
+    static let all: [WebCategory] = [
+        WebCategory(name: "今日热播", typeId: "", subs: []),
+        WebCategory(name: "电影大片", typeId: "1", subs: [
+            WebSubCategory(name: "全部电影", typeId: "1", keyword: nil),
+            WebSubCategory(name: "恐怖惊悚", typeId: "10", keyword: nil),
+            WebSubCategory(name: "喜剧搞笑", typeId: "7", keyword: nil),
+            WebSubCategory(name: "科幻魔幻", typeId: "9", keyword: nil),
+            WebSubCategory(name: "动作大片", typeId: "6", keyword: nil),
+            WebSubCategory(name: "爱情浪漫", typeId: "8", keyword: nil),
+            WebSubCategory(name: "战争史诗", typeId: "12", keyword: nil),
+            WebSubCategory(name: "悬疑剧情", typeId: "11", keyword: nil),
+            WebSubCategory(name: "动画电影", typeId: "23", keyword: nil),
+        ]),
+        WebCategory(name: "连续剧集", typeId: "2", subs: [
+            WebSubCategory(name: "全部剧集", typeId: "2", keyword: nil),
+            WebSubCategory(name: "刑侦破案", typeId: "", keyword: "刑警"),
+            WebSubCategory(name: "悬疑探案", typeId: "", keyword: "提刑官"),
+            WebSubCategory(name: "警匪缉毒", typeId: "", keyword: "缉毒"),
+            WebSubCategory(name: "谍战风云", typeId: "", keyword: "谍战"),
+            WebSubCategory(name: "国产剧", typeId: "13", keyword: nil),
+            WebSubCategory(name: "港台剧", typeId: "14", keyword: nil),
+            WebSubCategory(name: "日韩剧", typeId: "15", keyword: nil),
+            WebSubCategory(name: "欧美剧", typeId: "16", keyword: nil),
+        ]),
+        WebCategory(name: "热门综艺", typeId: "3", subs: []),
+        WebCategory(name: "动漫番剧", typeId: "4", subs: [
+            WebSubCategory(name: "全部动漫", typeId: "4", keyword: nil),
+            WebSubCategory(name: "国产动漫", typeId: "20", keyword: nil),
+            WebSubCategory(name: "日韩动漫", typeId: "21", keyword: nil),
+            WebSubCategory(name: "欧美动漫", typeId: "22", keyword: nil),
+        ]),
+    ]
+    static func parent(forType typeId: String) -> WebCategory? { all.first { $0.typeId == typeId } }
+}
+
 // MARK: - 首页数据（新版沉浸式与旧版共用：分类搜索 + 云端合并）
 
 @MainActor
@@ -387,14 +435,15 @@ struct ImmersiveHomeView: View {
     @ObservedObject var data: HomeData
     @State private var heroIdx = 0
     @State private var backdrops: [String: String] = [:]
-    @State private var chipType = ""
+    @State private var chipParent = ""
+    @State private var chipSub: WebSubCategory?
+    private var currentSubs: [WebSubCategory] { WebCategories.parent(forType: chipParent)?.subs ?? [] }
     @State private var gridGroups: [VodGroup] = []
     @State private var gridPage = 1
     @State private var gridPageCount = 1
     @State private var gridLoading = false
     @State private var gridError: String?
 
-    private let chips = [("全部", ""), ("电视剧", "2"), ("电影", "1"), ("综艺", "3"), ("动漫", "4")]
     private var heroes: [VodGroup] { Array((data.cats["今日热播"] ?? []).prefix(5)) }
     private var trendHeroes: [TmdbTrendItem] { Array(data.trending.prefix(5)) }
     private var favGroups: [VodGroup] {
@@ -431,16 +480,32 @@ struct ImmersiveHomeView: View {
                         }
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 10) {
-                                ForEach(chips, id: \.1) { c in
-                                    Button(c.0) {
-                                        chipType = c.1
+                                ForEach(WebCategories.all, id: \.typeId) { c in
+                                    Button(c.name) {
+                                        chipParent = c.typeId
+                                        chipSub = nil
                                         Task { await searchGrid(reset: true) }
                                     }
                                     .buttonStyle(.borderedProminent)
-                                    .tint(chipType == c.1 ? .red : .gray)
+                                    .tint(chipParent == c.typeId ? .red : .gray)
                                 }
                             }
                             .padding(.horizontal)
+                        }
+                        if !currentSubs.isEmpty {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 10) {
+                                    ForEach(currentSubs, id: \.self) { s in
+                                        Button(s.name) {
+                                            chipSub = s
+                                            Task { await searchGrid(reset: true) }
+                                        }
+                                        .buttonStyle(.borderedProminent)
+                                        .tint(chipSub == s ? .red : .gray)
+                                    }
+                                }
+                                .padding(.horizontal)
+                            }
                         }
                         if !store.recents.isEmpty {
                             VStack(alignment: .leading, spacing: 8) {
@@ -533,7 +598,10 @@ struct ImmersiveHomeView: View {
         gridLoading = true
         gridError = nil
         do {
-            let (found, _, pc) = try await ApiClient.shared.search(wd: "", type: chipType, pg: gridPage)
+            // 子类优先：keyword 类子类走关键词搜索，其余子类 id 直接当 type 传。
+            let wd = chipSub?.keyword ?? ""
+            let type = chipSub?.typeId ?? chipParent
+            let (found, _, pc) = try await ApiClient.shared.search(wd: wd, type: type, pg: gridPage)
             gridGroups.append(contentsOf: found)
             gridPageCount = pc
             gridPage += 1
@@ -673,6 +741,8 @@ private struct TrendDetailLoader: View {
 struct SearchView: View {
     @State private var keyword = ""
     @State private var type = ""
+    @State private var sub: WebSubCategory?
+    private var currentSubs: [WebSubCategory] { WebCategories.parent(forType: type)?.subs ?? [] }
     @State private var groups: [VodGroup] = []
     @State private var page = 1
     @State private var pageCount = 1
@@ -686,9 +756,9 @@ struct SearchView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 HStack {
-                    TextField("搜剧名", text: $keyword, onCommit: { Task { await search(reset: true) } })
+                    TextField("搜剧名", text: $keyword, onCommit: { sub = nil; Task { await search(reset: true) } })
                         .textFieldStyle(.roundedBorder)
-                    Button("搜索") { Task { await search(reset: true) } }
+                    Button("搜索") { sub = nil; Task { await search(reset: true) } }
                 }
                 .padding()
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -696,6 +766,7 @@ struct SearchView: View {
                         ForEach(types, id: \.1) { t in
                             Button(t.0) {
                                 type = t.1
+                                sub = nil
                                 Task { await search(reset: true) }
                             }
                             .buttonStyle(.borderedProminent)
@@ -703,6 +774,21 @@ struct SearchView: View {
                         }
                     }
                     .padding(.horizontal)
+                }
+                if !currentSubs.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack {
+                            ForEach(currentSubs, id: \.self) { s in
+                                Button(s.name) {
+                                    sub = s
+                                    Task { await search(reset: true) }
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(sub == s ? .red : .gray)
+                            }
+                        }
+                        .padding(.horizontal)
+                    }
                 }
                 if !recentKeywords.isEmpty {
                     HStack {
@@ -712,6 +798,7 @@ struct SearchView: View {
                                 ForEach(recentKeywords, id: \.self) { k in
                                     Button(k) {
                                         keyword = k
+                                        sub = nil
                                         Task { await search(reset: true) }
                                     }
                                     .buttonStyle(.bordered)
@@ -743,7 +830,8 @@ struct SearchView: View {
     private func search(reset: Bool) async {
         if reset {
             page = 1; groups = []
-            let k = keyword.trimmingCharacters(in: .whitespaces)
+            // 子类优先：keyword 类子类用它的关键词，其余子类 id 当 type 传。
+            let k = (sub?.keyword ?? keyword).trimmingCharacters(in: .whitespaces)
             if !k.isEmpty {
                 recentKeywords.removeAll { $0 == k }
                 recentKeywords.insert(k, at: 0)
@@ -754,7 +842,9 @@ struct SearchView: View {
         loading = true
         error = nil
         do {
-            let (found, _, pc) = try await ApiClient.shared.search(wd: keyword, type: type, pg: page)
+            let wd = sub?.keyword ?? keyword
+            let t = sub?.typeId ?? type
+            let (found, _, pc) = try await ApiClient.shared.search(wd: wd, type: t, pg: page)
             groups.append(contentsOf: found)
             pageCount = pc
             page += 1
