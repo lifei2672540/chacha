@@ -53,8 +53,9 @@ struct GHT63App: App {
             // 各 tab 的导航状态照常保留，切 tab 不会丢正在看的详情页。
             // 注意：藏底栏与深浅色必须写在每个 tab 上 —— 写在 TabView 上不生效，
             // 1.3.0 就是这么漏的：底栏旧标签露在玻璃条下面，设置页的状态栏还是白字。
-            // 给玻璃底栏留空，别盖住内容。
-            .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 76) }
+            // 玻璃底栏的留空也必须写在每个 tab 的 NavigationStack 上：写在 TabView
+            // 上的 safeAreaInset 传不进各页的滚动视图，底部内容会被玻璃条盖住、
+            // 滑到底一松手就弹回去（1.4.3 的教训，设置页表单也一样）。
             .overlay(alignment: .bottom) {
                 GlassTabBar(selected: $tabNav.selected)
                     .padding(.horizontal, 16)
