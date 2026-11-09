@@ -224,6 +224,8 @@ struct HomeView: View {
         }
         // 底栏藏掉（写在 TabView 上不生效，1.3.0 的教训）；栈里推出的详情页也一样藏。
         .toolbar(.hidden, for: .tabBar)
+        // 给玻璃底栏留空：写在栈上才能进滚动视图的底边距（写 TabView 上传不进去，1.4.3）。
+        .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 76) }
         .task { await data.load() }
     }
 }
@@ -836,6 +838,8 @@ struct SearchView: View {
         }
         // 底栏藏掉（写在 TabView 上不生效，1.3.0 的教训）。
         .toolbar(.hidden, for: .tabBar)
+        // 给玻璃底栏留空：写在栈上才能进滚动视图的底边距（写 TabView 上传不进去，1.4.3）。
+        .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 76) }
     }
 
     private func search(reset: Bool) async {
