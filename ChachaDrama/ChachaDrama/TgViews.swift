@@ -845,6 +845,9 @@ struct TgPlayerView: View {
                             Text(p >= 0 ? "正在缓冲 \(Int(p * 100))%（\(Int(model.cacheMB))MB）" : "正在缓冲 \(Int(model.cacheMB))MB")
                                 .font(.caption).foregroundColor(.yellow)
                         }
+                        if let hint = model.videoHint {
+                            Text(hint).font(.caption).foregroundColor(.yellow).multilineTextAlignment(.center)
+                        }
                         if let err = model.error {
                             Text(err).font(.caption).foregroundColor(.red).multilineTextAlignment(.center)
                             HStack(spacing: 12) {
