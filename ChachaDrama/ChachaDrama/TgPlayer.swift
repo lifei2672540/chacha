@@ -536,8 +536,11 @@ final class TgPlayerModel: ObservableObject {
             let videoTracks = it.asset.tracks(withMediaType: .video)
             var codec = ""
             if let vt = videoTracks.first,
-               let fd = vt.formatDescriptions.first {
-                codec = Self.fourCC(CMFormatDescriptionGetMediaSubType(fd))
+               let raw = vt.formatDescriptions.first {
+                // formatDescriptions is [Any]; the elements are CMFormatDescription
+                // by construction. The compiler rejects `as?` to a CF type here
+                // and suggests `as!` instead.
+                codec = Self.fourCC(CMFormatDescriptionGetMediaSubType(raw as! CMFormatDescription))
             }
             let epLabel = currentVideo?.epLabel ?? ""
             if videoTracks.isEmpty {
