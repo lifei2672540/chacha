@@ -16,6 +16,10 @@ struct DetailView: View {
     @State private var playEp: Episode?
     /// 果鉴式选集分组：每组 30 集，默认停在续播集所在组。
     @State private var epGroup = 0
+    /// 测速状态：测当前线路首集（续播集优先）的直链。
+    @State private var speedTesting = false
+    @State private var speedResult: String?
+    @State private var speedOK = false
 
     private var source: VodSource? { group.sources.indices.contains(sourceIdx) ? group.sources[sourceIdx] : nil }
     private var line: PlayLine? {
@@ -64,6 +68,126 @@ struct DetailView: View {
     private func resetEpGroup() {
         if let r = resumeEp, let idx = eps.firstIndex(of: r) { epGroup = idx / 30 }
         else { epGroup = 0 }
+    }
+
+    /// 待测地址：PY 组是待解析的站内地址、测不了直链；Emby 伪地址先换成真实流地址。
+    private var testURL: String? {
+        guard group.pyApi.isEmpty else { return nil }
+        guard let ep = resumeEp ?? line?.episodes.first else { return nil }
+        let u = ep.url
+        if u.hasPrefix("emby:") { return EmbyApi.streamUrl(group: group, episode: ep) }
+        return u.isEmpty ? nil : u
+    }
+
+    private func runSpeedTest() async {
+        guard let u = testURL else { return }
+        speedTesting = true
+        speedResult = nil
+        let (ok, mbps) = await testSpeed(urlString: u)
+        speedTesting = false
+        if ok {
+            speedOK = true
+            if let m = mbps {
+                speedResult = m >= 1 ? "能看 · \(String(format: "%.1f", m)) MB/s" : "能看 · \(Int(m * 1000)) KB/s"
+            } else {
+                speedResult = "能看 · 速度未知"
+            }
+        } else {
+            speedOK = false
+            speedResult = "打不开或超时，换条线路试试"
+        }
+    }
+
+    /// 测速：m3u8 先取播放列表、再下首个分片；直链直接下前 1MB；最多 15 秒。
+    /// 返回（能看，速度 MB/s；速度测不出时为 nil）。
+    private func testSpeed(urlString: String) async -> (Bool, Double?) {
+        guard let url = URL(string: urlString) else { return (false, nil) }
+        let ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.timeoutIntervalForRequest = 15
+        cfg.timeoutIntervalForResource = 15
+        let session = URLSession(configuration: cfg)
+        // 只读首字节探响应头：有些地址不带 .m3u8 后缀，靠 Content-Type 认播放列表。
+        // 探头只认类型、不判生死（生死由正式下载定，避免不支持 Range 的站被误判）。
+        var isPlaylist = urlString.lowercased().contains(".m3u8")
+        var probe = URLRequest(url: url, timeoutInterval: 10)
+        probe.setValue("bytes=0-0", forHTTPHeaderField: "Range")
+        probe.setValue(ua, forHTTPHeaderField: "User-Agent")
+        if let (_, resp) = try? await session.data(for: probe),
+           let http = resp as? HTTPURLResponse,
+           let ct = http.value(forHTTPHeaderField: "Content-Type")?.lowercased(),
+           ct.contains("mpegurl") { isPlaylist = true }
+        // 播放列表：沿首条非注释行最多跟 2 层（主列表 → 分列表 → 分片）。
+        var target = url
+        if isPlaylist {
+            var hops = 0
+            while hops < 2 {
+                guard let (data, _) = try? await session.data(from: target),
+                      let text = String(data: data, encoding: .utf8) else { break }
+                var next: URL?
+                for line in text.components(separatedBy: .newlines) {
+                    let t = line.trimmingCharacters(in: .whitespaces)
+                    if t.isEmpty || t.hasPrefix("#") { continue }
+                    next = URL(string: t, relativeTo: target)?.absoluteURL
+                    break
+                }
+                guard let n = next else { break }
+                target = n
+                hops += 1
+                if !target.absoluteString.lowercased().contains(".m3u8") { break }
+            }
+            // 跟完还是列表（没找到分片）：地址通、速度测不出。
+            if target.absoluteString.lowercased().contains(".m3u8") { return (true, nil) }
+        }
+        return await downloadFirstMB(target, ua: ua, session: session)
+    }
+
+    /// 下前 1MB 计时（分片不足 1MB 就整段测；读满即停，不下全文）。
+    /// 站不支持 Range 时（416）改不带 Range 重试一次，照样只读 1MB。
+    private func downloadFirstMB(_ url: URL, ua: String, session: URLSession) async -> (Bool, Double?) {
+        var req = URLRequest(url: url, timeoutInterval: 15)
+        req.setValue("bytes=0-1048575", forHTTPHeaderField: "Range")
+        req.setValue(ua, forHTTPHeaderField: "User-Agent")
+        do {
+            let (bytes, resp) = try await session.bytes(for: req)
+            guard let http = resp as? HTTPURLResponse else { return (false, nil) }
+            if http.statusCode == 416 {
+                var plain = req
+                plain.setValue(nil, forHTTPHeaderField: "Range")
+                return await downloadFirstMBPlain(plain, session: session)
+            }
+            guard (200...299).contains(http.statusCode) || http.statusCode == 206 else { return (false, nil) }
+            var total = 0
+            let start = Date()
+            for try await _ in bytes {
+                total += 1
+                if total >= 1_048_576 { break }
+            }
+            guard total > 0 else { return (false, nil) }
+            let secs = max(Date().timeIntervalSince(start), 0.01)
+            return (true, Double(total) / 1_000_000 / secs)
+        } catch {
+            return (false, nil)
+        }
+    }
+
+    /// 不带 Range 下前 1MB（downloadFirstMB 遇 416 时的重试路径）。
+    private func downloadFirstMBPlain(_ req: URLRequest, session: URLSession) async -> (Bool, Double?) {
+        do {
+            let (bytes, resp) = try await session.bytes(for: req)
+            guard let http = resp as? HTTPURLResponse, (200...299).contains(http.statusCode) else { return (false, nil) }
+            var total = 0
+            let start = Date()
+            for try await _ in bytes {
+                total += 1
+                if total >= 1_048_576 { break }
+            }
+            guard total > 0 else { return (false, nil) }
+            let secs = max(Date().timeIntervalSince(start), 0.01)
+            return (true, Double(total) / 1_000_000 / secs)
+        } catch {
+            return (false, nil)
+        }
     }
 
     var body: some View {
@@ -156,14 +280,30 @@ struct DetailView: View {
                     if group.sources.count > 1 {
                         Text("源").font(.headline)
                         FlowChips(items: group.sources.map { $0.sourceLabel }, selected: sourceIdx) { i in
-                            sourceIdx = i; lineIdx = 0; resetEpGroup()
+                            sourceIdx = i; lineIdx = 0; resetEpGroup(); speedResult = nil
                         }
                     }
                     // 线路切换
                     if let lines = source?.lines, lines.count > 1 {
                         Text("线路").font(.headline)
                         FlowChips(items: lines.map { $0.label.isEmpty ? "线路\($0.lineIndex)" : $0.label }, selected: lineIdx) { i in
-                            lineIdx = i; resetEpGroup()
+                            lineIdx = i; resetEpGroup(); speedResult = nil
+                        }
+                    }
+                    // 测速：先测当前线路首集能不能看、多快（换源/换线路后结果清空）
+                    if !group.pyApi.isEmpty {
+                        Text("PY 源需解析后才能播，测速不适用").font(.subheadline).foregroundColor(.secondary)
+                    } else {
+                        HStack(spacing: 10) {
+                            Button(speedTesting ? "测速中…" : "测速") {
+                                Task { await runSpeedTest() }
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(.gray)
+                            .disabled(speedTesting || testURL == nil)
+                            if let r = speedResult {
+                                Text(r).font(.subheadline).foregroundColor(speedOK ? .green : .red)
+                            }
                         }
                     }
                     // 选集：每组 30 集；看过的集变浅，续播集红框高亮
