@@ -427,83 +427,140 @@ struct TgShowDetailView: View {
 struct TgBrowseView: View {
     var channel: TgChannel
     @Binding var playTarget: TgPlayTarget?
-    @State private var videos: [TgVideo] = []
-    @State private var page = 1
-    @State private var total = 0
+    @State private var shows: [TgShow] = []
+    @State private var showPage = 1
+    @State private var showTotal = 0
+    @State private var singles: [TgVideo] = []
+    @State private var singlePage = 1
+    @State private var singleTotal = 0
     @State private var loading = false
     @State private var error: String?
 
     private let pageSize = 30
-    private var pageCount: Int { max(1, (total + pageSize - 1) / pageSize) }
+    private var showPageCount: Int { max(1, (showTotal + pageSize - 1) / pageSize) }
+    private var singlePageCount: Int { max(1, (singleTotal + pageSize - 1) / pageSize) }
 
     var body: some View {
         VStack {
-            if let error = error, videos.isEmpty {
+            if let error = error, shows.isEmpty {
                 VStack(spacing: 12) {
                     Text(error).foregroundColor(.red)
-                    Button("重试") { Task { await load(page: 1) } }
+                    Button("重试") { Task { await reload() } }
                 }
                 .padding()
             } else {
                 ScrollView {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 105), spacing: 12)], spacing: 16) {
-                        ForEach(videos) { v in
-                            Button {
-                                if let idx = videos.firstIndex(of: v) {
-                                    playTarget = TgPlayTarget(episodes: videos, index: idx,
-                                                             showId: v.show ?? "", showName: v.show ?? v.title,
-                                                             cover: v.thumbUrl)
-                                }
-                            } label: {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    AsyncImage(url: URL(string: v.absUrl(TgAPI.baseUrl, v.thumbUrl))) { phase in
-                                        if let img = phase.image {
-                                            img.resizable().aspectRatio(contentMode: .fill)
-                                        } else {
-                                            Color(white: 0.2)
+                    VStack(alignment: .leading, spacing: 20) {
+                        if !shows.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("剧集").font(.headline).padding(.horizontal)
+                                LazyVGrid(columns: [GridItem(.adaptive(minimum: 105), spacing: 12)], spacing: 16) {
+                                    ForEach(shows) { s in
+                                        NavigationLink(value: s) {
+                                            TgShowCard(show: s)
                                         }
+                                        .buttonStyle(.plain)
                                     }
-                                    .frame(width: 110, height: 154)
-                                    .clipped()
-                                    .cornerRadius(8)
-                                    Text(v.title).font(.caption).lineLimit(2).foregroundColor(.white)
-                                    Text(v.metaLine()).font(.caption2).foregroundColor(.gray).lineLimit(1)
                                 }
-                                .frame(width: 110)
+                                .padding(.horizontal)
+                                if showTotal > pageSize {
+                                    HStack(spacing: 20) {
+                                        Button("上一页") { Task { await loadShows(page: max(1, showPage - 1)) } }
+                                            .disabled(showPage <= 1)
+                                        Text("第 \(showPage) / \(showPageCount) 页").font(.caption).foregroundColor(.gray)
+                                        Button("下一页") { Task { await loadShows(page: min(showPageCount, showPage + 1)) } }
+                                            .disabled(showPage >= showPageCount)
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                }
                             }
-                            .buttonStyle(.plain)
+                        }
+                        if !singles.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("单条视频").font(.headline).padding(.horizontal)
+                                LazyVGrid(columns: [GridItem(.adaptive(minimum: 105), spacing: 12)], spacing: 16) {
+                                    ForEach(singles) { v in
+                                        Button {
+                                            if let idx = singles.firstIndex(of: v) {
+                                                playTarget = TgPlayTarget(episodes: singles, index: idx,
+                                                                         showId: v.show ?? "", showName: v.show ?? v.title,
+                                                                         cover: v.thumbUrl)
+                                            }
+                                        } label: {
+                                            VStack(alignment: .leading, spacing: 6) {
+                                                AsyncImage(url: URL(string: v.absUrl(TgAPI.baseUrl, v.thumbUrl))) { phase in
+                                                    if let img = phase.image {
+                                                        img.resizable().aspectRatio(contentMode: .fill)
+                                                    } else {
+                                                        Color(white: 0.2)
+                                                    }
+                                                }
+                                                .frame(width: 110, height: 154)
+                                                .clipped()
+                                                .cornerRadius(8)
+                                                Text(v.title).font(.caption).lineLimit(2).foregroundColor(.white)
+                                                Text(v.metaLine()).font(.caption2).foregroundColor(.gray).lineLimit(1)
+                                            }
+                                            .frame(width: 110)
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                                .padding(.horizontal)
+                                if singleTotal > pageSize {
+                                    HStack(spacing: 20) {
+                                        Button("上一页") { Task { await loadSingles(page: max(1, singlePage - 1)) } }
+                                            .disabled(singlePage <= 1)
+                                        Text("第 \(singlePage) / \(singlePageCount) 页").font(.caption).foregroundColor(.gray)
+                                        Button("下一页") { Task { await loadSingles(page: min(singlePageCount, singlePage + 1)) } }
+                                            .disabled(singlePage >= singlePageCount)
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                }
+                            }
+                        }
+                        if shows.isEmpty && singles.isEmpty && !loading {
+                            Text("这个频道还没有收录的剧或视频。").font(.caption).foregroundColor(.gray).padding(.horizontal)
                         }
                     }
-                    .padding()
+                    .padding(.vertical)
                 }
-                HStack(spacing: 20) {
-                    Button("上一页") { Task { await load(page: max(1, page - 1)) } }
-                        .disabled(page <= 1)
-                    Text("第 \(page) / \(pageCount) 页").font(.caption).foregroundColor(.gray)
-                    Button("下一页") { Task { await load(page: min(pageCount, page + 1)) } }
-                        .disabled(page >= pageCount)
-                }
-                .padding(.bottom)
+                .refreshable { await reload() }
             }
             if loading { ProgressView() }
         }
         .navigationTitle(channel.title)
         .navigationBarTitleDisplayMode(.inline)
-        .task { await load(page: 1) }
+        .task { await reload() }
     }
 
-    private func load(page: Int) async {
+    private func reload() async {
         loading = true
         defer { loading = false }
+        await loadShows(page: 1)
+        await loadSingles(page: 1)
+    }
+
+    private func loadShows(page: Int) async {
         do {
-            let (total, items) = try await TgAPI.getFeed(channel: channel.key, page: page, pageSize: pageSize)
-            self.total = total
-            self.page = page
-            self.videos = items
-            self.error = nil
+            let (total, list) = try await TgAPI.getShows(page: page, pageSize: pageSize, channel: channel.key)
+            showTotal = total
+            showPage = page
+            shows = list
+            error = nil
         } catch {
-            self.videos = []
-            self.error = "加载失败：\(error.localizedDescription)"
+            if shows.isEmpty { self.error = "加载失败：\(error.localizedDescription)" }
+        }
+    }
+
+    private func loadSingles(page: Int) async {
+        do {
+            let (total, list) = try await TgAPI.getSingles(channel: channel.key, page: page, pageSize: pageSize)
+            singleTotal = total
+            singlePage = page
+            singles = list
+        } catch {
+            // 单条视频拉不到不挡剧集列表：这区直接不显示。
         }
     }
 }
