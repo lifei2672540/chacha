@@ -186,8 +186,10 @@ final class HomeData: ObservableObject {
             await MainActor.run { Store.shared.mergeCloudFavorites(cf) }
             _ = cp
             trending = await trend
+            // 首页资源站点：只用这一个站出首页各分类（空 = 全部站聚合）。
+            let disabled = try await ApiClient.shared.homeDisabled()
             for def in catDefs {
-                let (groups, _, _) = try await ApiClient.shared.search(wd: def.1, type: def.2, pg: 1)
+                let (groups, _, _) = try await ApiClient.shared.search(wd: def.1, type: def.2, pg: 1, disabled: disabled)
                 cats[def.0] = groups
             }
         } catch {
@@ -437,6 +439,7 @@ struct ImmersiveHomeView: View {
     @State private var backdrops: [String: String] = [:]
     @State private var chipParent = ""
     @State private var chipSub: WebSubCategory?
+    @AppStorage("homeStation") private var homeStation = ""
     private var currentSubs: [WebSubCategory] { WebCategories.parent(forType: chipParent)?.subs ?? [] }
     @State private var gridGroups: [VodGroup] = []
     @State private var gridPage = 1
@@ -477,6 +480,14 @@ struct ImmersiveHomeView: View {
                                 }
                             }
                             .frame(maxWidth: .infinity)
+                        }
+                        if !homeStation.isEmpty {
+                            HStack {
+                                Text("首页只用「\(homeStation)」").font(.caption).foregroundColor(.secondary)
+                                Button("取消") { homeStation = ""; Task { await data.load(); await searchGrid(reset: true) } }
+                                    .font(.caption)
+                            }
+                            .padding(.horizontal)
                         }
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 10) {
@@ -601,7 +612,7 @@ struct ImmersiveHomeView: View {
             // 子类优先：keyword 类子类走关键词搜索，其余子类 id 直接当 type 传。
             let wd = chipSub?.keyword ?? ""
             let type = chipSub?.typeId ?? chipParent
-            let (found, _, pc) = try await ApiClient.shared.search(wd: wd, type: type, pg: gridPage)
+            let (found, _, pc) = try await ApiClient.shared.search(wd: wd, type: type, pg: gridPage, disabled: try await ApiClient.shared.homeDisabled())
             gridGroups.append(contentsOf: found)
             gridPageCount = pc
             gridPage += 1
