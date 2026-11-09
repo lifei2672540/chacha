@@ -98,28 +98,35 @@ private struct SiteBrowseView: View {
                 }
             }
             ScrollView {
-                VodGrid(groups: groups).padding()
+                VodGrid(groups: groups) {
+                    if page < pageCount && !loading {
+                        Task { await browse(reset: false) }
+                    }
+                }
+                .padding()
                 if groups.isEmpty && !loading {
                     Text("该站暂无内容").foregroundColor(.secondary).padding()
                 }
                 if !groups.isEmpty {
-                    HStack {
-                        Spacer()
-                        if loading {
-                            ProgressView().padding()
-                        } else if page < pageCount {
-                            Text("上滑加载更多").foregroundColor(.secondary).padding()
-                        } else {
-                            Text("没有更多了").foregroundColor(.secondary).padding()
-                        }
-                        Spacer()
-                    }
-                    .id("loadMore-\(page)")
-                    .onAppear {
+                    Button {
                         if page < pageCount && !loading {
                             Task { await browse(reset: false) }
                         }
+                    } label: {
+                        HStack {
+                            Spacer()
+                            if loading {
+                                ProgressView().padding()
+                            } else if page < pageCount {
+                                Text("上滑加载更多").foregroundColor(.secondary).padding()
+                            } else {
+                                Text("没有更多了").foregroundColor(.secondary).padding()
+                            }
+                            Spacer()
+                        }
                     }
+                    .buttonStyle(.plain)
+                    .disabled(loading || page >= pageCount)
                 }
                 if let error = error { Text(error).foregroundColor(.red).padding() }
             }
@@ -312,7 +319,7 @@ struct SettingsView: View {
                 Section {
                     Text("端侧 PY 正在接入：解释器与蜘蛛桥已就绪，订阅浏览界面下一阶段来；Jar 不在 iOS 路线内。")
                         .font(.caption).foregroundColor(.secondary)
-                    Text("茶茶点播 iOS 1.3.6（原生版）").font(.caption).foregroundColor(.secondary)
+                    Text("茶茶点播 iOS 1.3.7（原生版）").font(.caption).foregroundColor(.secondary)
                     Text("内嵌 Python：\(PyRuntime.version)").font(.caption).foregroundColor(.secondary)
                     if !savedNote.isEmpty { Text(savedNote).font(.caption).foregroundColor(.green) }
                 }
