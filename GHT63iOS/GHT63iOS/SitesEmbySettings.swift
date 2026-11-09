@@ -9,6 +9,7 @@ struct SitesView: View {
     @State private var selected: SourceInfo?
     @State private var error: String?
     @State private var loaded = false
+    @AppStorage("homeStation") private var homeStation = ""
 
     var body: some View {
         NavigationStack {
@@ -52,7 +53,7 @@ struct SitesView: View {
                 let end = min(start + 3, stations.count)
                 HStack(spacing: 8) {
                     ForEach(stations[start..<end]) { s in
-                        Button(s.name) { selected = s }
+                        Button((s.name == homeStation ? "★ " : "") + s.name) { selected = s }
                             .buttonStyle(.bordered)
                             .frame(maxWidth: .infinity)
                     }
@@ -83,6 +84,7 @@ private struct SiteBrowseView: View {
     @State private var cats: [SiteType] = []
     @State private var typeId = ""
     @State private var subTypeId = ""
+    @AppStorage("homeStation") private var homeStation = ""
     /// 大类行只出顶级（pid == 0，没有就全出）；子类行出选中大类的孩子。
     private var topCats: [SiteType] {
         let tops = cats.filter { $0.pid == 0 }
@@ -113,6 +115,15 @@ private struct SiteBrowseView: View {
                 Button("刷新") { Task { await browse(reset: true) } }
             }
             .padding()
+            HStack {
+                Button(homeStation == station.name ? "★ 已设为首页资源站点" : "设为首页资源站点") {
+                    homeStation = homeStation == station.name ? "" : station.name
+                }
+                .buttonStyle(.bordered)
+                .tint(homeStation == station.name ? .green : .gray)
+                Spacer()
+            }
+            .padding(.horizontal)
             if !cats.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack {
@@ -368,7 +379,7 @@ struct SettingsView: View {
                 Section {
                     Text("端侧 PY 正在接入：解释器与蜘蛛桥已就绪，订阅浏览界面下一阶段来；Jar 不在 iOS 路线内。")
                         .font(.caption).foregroundColor(.secondary)
-                    Text("茶茶点播 iOS 1.4.3（原生版）").font(.caption).foregroundColor(.secondary)
+                    Text("茶茶点播 iOS 1.4.4（原生版）").font(.caption).foregroundColor(.secondary)
                     Text("内嵌 Python：\(PyRuntime.version)").font(.caption).foregroundColor(.secondary)
                     if !savedNote.isEmpty { Text(savedNote).font(.caption).foregroundColor(.green) }
                 }
