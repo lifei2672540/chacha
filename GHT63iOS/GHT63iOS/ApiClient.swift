@@ -95,6 +95,15 @@ final class ApiClient {
         return (builtin, custom)
     }
 
+    /// 首页资源站点对应的 disabled 列表（空 = 全部站聚合；站名不在列表里也回落聚合）。
+    func homeDisabled() async throws -> [String] {
+        let home = UserDefaults.standard.string(forKey: "homeStation") ?? ""
+        guard !home.isEmpty else { return [] }
+        let (b, c) = try await getSources()
+        let all = b + c.map { $0.name }
+        return all.contains(home) ? all.filter { $0 != home } : []
+    }
+
     // MARK: 采集站自己的分类（直接问本站 MacCMS ac=list，浏览器 UA）
     func getSiteTypes(apiUrl: String) async throws -> [SiteType] {
         let sep = apiUrl.contains("?") ? "&" : "?"
