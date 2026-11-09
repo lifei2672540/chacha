@@ -67,6 +67,20 @@ private struct SiteBrowseView: View {
     var onBack: () -> Void
     @State private var cats: [SiteType] = []
     @State private var typeId = ""
+    @State private var subTypeId = ""
+    /// 大类行只出顶级（pid == 0，没有就全出）；子类行出选中大类的孩子。
+    private var topCats: [SiteType] {
+        let tops = cats.filter { $0.pid == 0 }
+        return tops.isEmpty ? cats : tops
+    }
+    /// 选中大类的子类（pid == 大类 id）：本站接口不展开大类，
+    /// 只有叶子分类 id 查得到片，大类本身查出来是空的。
+    private var subCats: [SiteType] {
+        guard let pid = Int(typeId), !typeId.isEmpty else { return [] }
+        return cats.filter { $0.pid == pid }
+    }
+    /// 实际查的分类：选了子类就用子类 id，否则用大类 id（全部时为空）。
+    private var effectiveType: String { subTypeId.isEmpty ? typeId : subTypeId }
     @State private var groups: [VodGroup] = []
     @State private var page = 1
     @State private var pageCount = 1
@@ -87,11 +101,27 @@ private struct SiteBrowseView: View {
             if !cats.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack {
-                        Button("全部") { typeId = ""; Task { await browse(reset: true) } }
+                        Button("全部") { typeId = ""; subTypeId = ""; Task { await browse(reset: true) } }
                             .buttonStyle(.borderedProminent).tint(typeId.isEmpty ? .blue : .gray)
-                        ForEach(cats) { c in
-                            Button(c.name) { typeId = "\(c.id)"; Task { await browse(reset: true) } }
-                                .buttonStyle(.borderedProminent).tint(typeId == "\(c.id)" ? .blue : .gray)
+                        ForEach(topCats) { c in
+                            Button(c.name) {
+                                typeId = "\(c.id)"
+                                // 大类本身查不到片（本站不展开大类），直接进第一个子类。
+                                subTypeId = cats.filter { $0.pid == c.id }.first.map { "\($0.id)" } ?? ""
+                                Task { await browse(reset: true) }
+                            }
+                            .buttonStyle(.borderedProminent).tint(typeId == "\(c.id)" ? .blue : .gray)
+                        }
+                    }
+                    .padding(.horizontal)
+                }
+            }
+            if !subCats.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack {
+                        ForEach(subCats) { c in
+                            Button(c.name) { subTypeId = "\(c.id)"; Task { await browse(reset: true) } }
+                                .buttonStyle(.borderedProminent).tint(subTypeId == "\(c.id)" ? .blue : .gray)
                         }
                     }
                     .padding(.horizontal)
@@ -135,12 +165,10 @@ private struct SiteBrowseView: View {
             guard !loaded else { return }
             if station.type == "maccms" {
                 if !station.url.isEmpty {
-                    cats = (try? await ApiClient.shared.getSiteTypes(apiUrl: station.url))?.filter { $0.pid == 0 } ?? []
-                    if cats.isEmpty { cats = (try? await ApiClient.shared.getSiteTypes(apiUrl: station.url)) ?? [] }
+                    cats = (try? await ApiClient.shared.getSiteTypes(apiUrl: station.url)) ?? []
                 } else {
                     // 内置站无地址：服务端按站名代问本站 ac=list。
-                    cats = (try? await ApiClient.shared.getSiteTypesByName(station.name))?.filter { $0.pid == 0 } ?? []
-                    if cats.isEmpty { cats = (try? await ApiClient.shared.getSiteTypesByName(station.name)) ?? [] }
+                    cats = (try? await ApiClient.shared.getSiteTypesByName(station.name)) ?? []
                 }
             }
             await browse(reset: true)
@@ -152,11 +180,11 @@ private struct SiteBrowseView: View {
         if reset { page = 1; groups = [] }
         loading = true
         error = nil
-        let wantType = typeId
+        let wantType = effectiveType
         do {
             let disabled = allNames.filter { $0 != station.name }
-            let (found, _, pc) = try await ApiClient.shared.search(wd: "", type: typeId, pg: page, disabled: disabled)
-            guard wantType == typeId else { loading = false; return }
+            let (found, _, pc) = try await ApiClient.shared.search(wd: "", type: effectiveType, pg: page, disabled: disabled)
+            guard wantType == effectiveType else { loading = false; return }
             groups.append(contentsOf: found)
             pageCount = pc
             page += 1
@@ -325,7 +353,7 @@ struct SettingsView: View {
                 Section {
                     Text("端侧 PY 正在接入：解释器与蜘蛛桥已就绪，订阅浏览界面下一阶段来；Jar 不在 iOS 路线内。")
                         .font(.caption).foregroundColor(.secondary)
-                    Text("茶茶点播 iOS 1.4.1（原生版）").font(.caption).foregroundColor(.secondary)
+                    Text("茶茶点播 iOS 1.4.2（原生版）").font(.caption).foregroundColor(.secondary)
                     Text("内嵌 Python：\(PyRuntime.version)").font(.caption).foregroundColor(.secondary)
                     if !savedNote.isEmpty { Text(savedNote).font(.caption).foregroundColor(.green) }
                 }
