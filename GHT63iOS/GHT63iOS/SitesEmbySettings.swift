@@ -110,6 +110,15 @@ private struct SiteBrowseView: View {
     @State private var loading = false
     @State private var loaded = false
     @State private var error: String?
+    /// 当页筛选（只筛已加载的 groups，不多请求）。
+    @State private var fType = ""
+    @State private var fYear = ""
+    @State private var fSort = PageSort.normal
+    @State private var fStatus = PageStatus.all
+    private var filteredGroups: [VodGroup] { filterGroups(groups, type: fType, year: fYear, sort: fSort, status: fStatus) }
+    private var filterTypes: [String] { Array(Set(groups.map { $0.typeName }.filter { !$0.isEmpty })).sorted() }
+    private var filterYears: [String] { Array(Set(groups.map { $0.year }.filter { !$0.isEmpty })).sorted(by: >) }
+    private func clearFilter() { fType = ""; fYear = ""; fSort = .normal; fStatus = .all }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -159,8 +168,11 @@ private struct SiteBrowseView: View {
                     .padding(.horizontal)
                 }
             }
+            if !groups.isEmpty {
+                PageFilterBar(type: $fType, year: $fYear, sort: $fSort, status: $fStatus, types: filterTypes, years: filterYears, total: groups.count, shown: filteredGroups.count) { clearFilter() }
+            }
             ScrollView {
-                VodGrid(groups: groups) {
+                VodGrid(groups: filteredGroups) {
                     if page < pageCount && !loading {
                         Task { await browse(reset: false) }
                     }
@@ -211,7 +223,7 @@ private struct SiteBrowseView: View {
     }
 
     private func browse(reset: Bool) async {
-        if reset { page = 1; groups = [] }
+        if reset { page = 1; groups = []; clearFilter() }
         loading = true
         error = nil
         let wantType = effectiveType
@@ -391,7 +403,7 @@ struct SettingsView: View {
                 Section {
                     Text("端侧 PY 正在接入：解释器与蜘蛛桥已就绪，订阅浏览界面下一阶段来；Jar 不在 iOS 路线内。")
                         .font(.caption).foregroundColor(.secondary)
-                    Text("茶茶点播 iOS 1.4.6（原生版）").font(.caption).foregroundColor(.secondary)
+                    Text("茶茶点播 iOS 1.4.8（原生版）").font(.caption).foregroundColor(.secondary)
                     Text("内嵌 Python：\(PyRuntime.version)").font(.caption).foregroundColor(.secondary)
                     if !savedNote.isEmpty { Text(savedNote).font(.caption).foregroundColor(.green) }
                 }
