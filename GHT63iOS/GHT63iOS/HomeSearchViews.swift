@@ -446,6 +446,15 @@ struct ImmersiveHomeView: View {
     @AppStorage("homeStation") private var homeStation = ""
     private var currentSubs: [WebSubCategory] { WebCategories.parent(forType: chipParent)?.subs ?? [] }
     @State private var gridGroups: [VodGroup] = []
+    /// 当页筛选（只筛已加载的 gridGroups，不多请求）。
+    @State private var fType = ""
+    @State private var fYear = ""
+    @State private var fSort = PageSort.normal
+    @State private var fStatus = PageStatus.all
+    private var filteredGridGroups: [VodGroup] { filterGroups(gridGroups, type: fType, year: fYear, sort: fSort, status: fStatus) }
+    private var filterTypes: [String] { Array(Set(gridGroups.map { $0.typeName }.filter { !$0.isEmpty })).sorted() }
+    private var filterYears: [String] { Array(Set(gridGroups.map { $0.year }.filter { !$0.isEmpty })).sorted(by: >) }
+    private func clearFilter() { fType = ""; fYear = ""; fSort = .normal; fStatus = .all }
     @State private var gridPage = 1
     @State private var gridPageCount = 1
     @State private var gridLoading = false
@@ -573,7 +582,10 @@ struct ImmersiveHomeView: View {
                         }
                         .buttonStyle(.plain)
                         .padding(.horizontal)
-                        VodGrid(groups: gridGroups).padding(.horizontal)
+                        if !gridGroups.isEmpty {
+                            PageFilterBar(type: $fType, year: $fYear, sort: $fSort, status: $fStatus, types: filterTypes, years: filterYears, total: gridGroups.count, shown: filteredGridGroups.count) { clearFilter() }
+                        }
+                        VodGrid(groups: filteredGridGroups).padding(.horizontal)
                         if gridPage < gridPageCount {
                             Button("加载更多") { Task { await searchGrid(reset: false) } }
                                 .frame(maxWidth: .infinity).padding()
@@ -611,7 +623,7 @@ struct ImmersiveHomeView: View {
     }
 
     private func searchGrid(reset: Bool) async {
-        if reset { gridPage = 1; gridGroups = [] }
+        if reset { gridPage = 1; gridGroups = []; clearFilter() }
         gridLoading = true
         gridError = nil
         do {
@@ -765,6 +777,15 @@ struct SearchView: View {
     @State private var pageCount = 1
     @State private var loading = false
     @State private var error: String?
+    /// 当页筛选（只筛已加载的 groups，不多请求）。
+    @State private var fType = ""
+    @State private var fYear = ""
+    @State private var fSort = PageSort.normal
+    @State private var fStatus = PageStatus.all
+    private var filteredGroups: [VodGroup] { filterGroups(groups, type: fType, year: fYear, sort: fSort, status: fStatus) }
+    private var filterTypes: [String] { Array(Set(groups.map { $0.typeName }.filter { !$0.isEmpty })).sorted() }
+    private var filterYears: [String] { Array(Set(groups.map { $0.year }.filter { !$0.isEmpty })).sorted(by: >) }
+    private func clearFilter() { fType = ""; fYear = ""; fSort = .normal; fStatus = .all }
     /// 果鉴式最近搜索：本机存，最多 8 条，点词直接搜。
     @State private var recentKeywords: [String] = UserDefaults.standard.stringArray(forKey: "recentKeywords") ?? []
     private let types = [("全部", ""), ("电影", "1"), ("剧集", "2"), ("综艺", "3"), ("动漫", "4")]
@@ -827,8 +848,11 @@ struct SearchView: View {
                     }
                     .padding(.horizontal)
                 }
+                if !groups.isEmpty {
+                    PageFilterBar(type: $fType, year: $fYear, sort: $fSort, status: $fStatus, types: filterTypes, years: filterYears, total: groups.count, shown: filteredGroups.count) { clearFilter() }
+                }
                 ScrollView {
-                    VodGrid(groups: groups).padding()
+                    VodGrid(groups: filteredGroups).padding()
                     if page < pageCount {
                         Button("加载更多") { Task { await search(reset: false) } }
                             .padding()
@@ -850,7 +874,7 @@ struct SearchView: View {
 
     private func search(reset: Bool) async {
         if reset {
-            page = 1; groups = []
+            page = 1; groups = []; clearFilter()
             // 子类优先：keyword 类子类用它的关键词，其余子类 id 当 type 传。
             let k = (sub?.keyword ?? keyword).trimmingCharacters(in: .whitespaces)
             if !k.isEmpty {
