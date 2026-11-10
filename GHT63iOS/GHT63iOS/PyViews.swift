@@ -265,6 +265,11 @@ struct PyBrowseView: View {
                                 PosterCard(group: g, width: 110)
                             }
                             .buttonStyle(.plain)
+                            // 上滑加载更多：最后一张海报滑进视野就翻下一页（采集站 1.3.7 同款，
+                            // 懒网格里的 onAppear 只在滚到时才触发，不会一进页就连翻）。
+                            .onAppear {
+                                if g.vodId == items.last?.vodId { Task { await loadMore() } }
+                            }
                         }
                     }
                     .padding()
@@ -273,6 +278,9 @@ struct PyBrowseView: View {
                             .buttonStyle(.bordered)
                             .padding(.bottom)
                     }
+                    // 底栏留空（1.4.7 同款）：没有它最后一行海报和“加载更多”会被玻璃底栏盖住，
+                    // 滑到底弹回、点不到，视频里就是这个问题。
+                    Color.clear.frame(height: 76)
                 }
             }
             if let error = error, !items.isEmpty {
@@ -319,7 +327,7 @@ struct PyBrowseView: View {
         }
     }
     private func loadMore() async {
-        guard !searching, pg < pagecount else { return }
+        guard !searching, !loading, pg < pagecount else { return }
         loading = true
         defer { loading = false }
         do {
