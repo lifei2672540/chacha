@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 // MARK: - 播放数据模型（与 TV 版 Models.kt 同款字段，CMS 聚合格式）
 
@@ -215,4 +216,111 @@ func fmtTgDuration(_ sec: Double) -> String {
     let s = Int(sec)
     if s >= 3600 { return String(format: "%d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60) }
     return String(format: "%d:%02d", s / 60, s % 60)
+}
+
+// MARK: - 当页筛选（网页版 displayGroups 同款）：只筛本页已加载的数据，不多请求。
+
+/// 当页排序：默认（服务端顺序）/ 年份最新 / 集数最多。
+enum PageSort: String, CaseIterable {
+    case normal = "默认"
+    case yearDesc = "年份最新"
+    case epsDesc = "集数最多"
+}
+
+/// 当页状态：全部 / 已完结 / 连载中。
+enum PageStatus: String, CaseIterable {
+    case all = "全部"
+    case done = "已完结"
+    case ongoing = "连载中"
+}
+
+/// 一部剧的完结状态：从各源 remarks 推断（常写“已完结”“更新至第X集”）；
+/// remarks 为空的判未知，只进“全部”，不硬编状态。
+func groupFinishStatus(_ g: VodGroup) -> PageStatus? {
+    let remarks = g.sources.map { $0.remarks }.joined(separator: " ")
+    if remarks.contains("完结") { return .done }
+    if remarks.contains("更新至") || remarks.contains("连载") { return .ongoing }
+    return nil
+}
+
+/// 当页筛选：类型 / 年份（精确匹配本页数据）+ 状态 + 排序。
+func filterGroups(_ groups: [VodGroup], type: String, year: String, sort: PageSort, status: PageStatus) -> [VodGroup] {
+    var out = groups
+    if !type.isEmpty { out = out.filter { $0.typeName == type } }
+    if !year.isEmpty { out = out.filter { $0.year == year } }
+    if status != .all { out = out.filter { groupFinishStatus($0) == status } }
+    switch sort {
+    case .yearDesc: out.sort { ($0.year, $0.name) > ($1.year, $1.name) }
+    case .epsDesc: out.sort { $0.allEpisodes > $1.allEpisodes }
+    case .normal: break
+    }
+    return out
+}
+
+/// 当页筛选行：类型 / 年份（取自本页数据）+ 排序 + 状态 + 已筛出 N 部 + 清除。
+struct PageFilterBar: View {
+    @Binding var type: String
+    @Binding var year: String
+    @Binding var sort: PageSort
+    @Binding var status: PageStatus
+    var types: [String]
+    var years: [String]
+    var total: Int
+    var shown: Int
+    var onClear: () -> Void
+
+    private var filtering: Bool { !type.isEmpty || !year.isEmpty || sort != .normal || status != .all }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !types.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack {
+                        Button("全部类型") { type = "" }
+                            .buttonStyle(.borderedProminent).tint(type.isEmpty ? .red : .gray)
+                        ForEach(types, id: \.self) { t in
+                            Button(t) { type = t }
+                                .buttonStyle(.borderedProminent).tint(type == t ? .red : .gray)
+                        }
+                    }
+                    .padding(.horizontal)
+                }
+            }
+            if !years.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack {
+                        Button("全部年份") { year = "" }
+                            .buttonStyle(.borderedProminent).tint(year.isEmpty ? .red : .gray)
+                        ForEach(years, id: \.self) { y in
+                            Button(y) { year = y }
+                                .buttonStyle(.borderedProminent).tint(year == y ? .red : .gray)
+                        }
+                    }
+                    .padding(.horizontal)
+                }
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack {
+                    ForEach(PageSort.allCases, id: \.self) { s in
+                        Button(s.rawValue) { sort = s }
+                            .buttonStyle(.borderedProminent).tint(sort == s ? .red : .gray)
+                    }
+                    Text("|").foregroundColor(.secondary)
+                    ForEach(PageStatus.allCases, id: \.self) { s in
+                        Button(s.rawValue) { status = s }
+                            .buttonStyle(.borderedProminent).tint(status == s ? .red : .gray)
+                    }
+                }
+                .padding(.horizontal)
+            }
+            if filtering {
+                HStack {
+                    Text("已筛出 \(shown) 部（共 \(total) 部）").font(.caption).foregroundColor(.secondary)
+                    Spacer()
+                    Button("清除筛选") { onClear() }.font(.caption)
+                }
+                .padding(.horizontal)
+            }
+        }
+    }
 }
