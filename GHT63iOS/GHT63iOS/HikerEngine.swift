@@ -2,8 +2,7 @@ import Foundation
 import JavaScriptCore
 
 /// 海阔规则 v1：规则 JSON 只当数据，脚本在 JSContext 里跑。
-/// MY_URL 在 v1 里取规则 JSON 地址：脚本只按 ## 切分类（首页无 ## → 空分类；
-/// 分类 `地址##分类` → 切出分类），search/detail 用各自模板与条目地址，所以成立。
+/// MY_URL：首页取规则地址；分类有 fyclass/fypage 占位就替换，没占位才拼 `##分类`（直接拼会让脚本切到 fyclass、分类丢了）；search/detail 用各自模板与条目地址。
 struct HikerRule: Codable, Identifiable, Hashable {
     var id: String
     var name: String
@@ -109,9 +108,16 @@ final class HikerEngine {
         await run(rule: rule, script: rule.findRule, myURL: rule.ruleURL, myPage: page, myKeyword: "")
     }
 
-    /// 分类：MY_URL 取 `规则地址##分类`，空分类走首页。
+    /// 分类：空分类走首页；规则地址里有 fyclass/fypage 占位时直接替换（海阔原规矩：地址 `hiker://empty##fyclass##fypage`，分类就是把 fyclass 换成类目、fypage 换成页码）；没占位的才在后面拼 `##分类`。直接拼会让脚本按 ## 切到 fyclass、分类丢了，点分类等于看首页。
     func category(rule: HikerRule, cls: String, page: Int) async -> [HikerItem] {
-        let myURL = cls.isEmpty ? rule.ruleURL : "\(rule.ruleURL)##\(cls)"
+        let myURL: String
+        if cls.isEmpty {
+            myURL = rule.ruleURL
+        } else if rule.ruleURL.contains("fyclass") {
+            myURL = rule.ruleURL.replacingOccurrences(of: "fyclass", with: cls).replacingOccurrences(of: "fypage", with: String(page))
+        } else {
+            myURL = "\(rule.ruleURL)##\(cls)"
+        }
         return await run(rule: rule, script: rule.findRule, myURL: myURL, myPage: page, myKeyword: "")
     }
 
@@ -295,16 +301,25 @@ final class HikerEngine {
         }
         for (k, v) in all { request.setValue(v, forHTTPHeaderField: k) }
         var out = ""
+        var failReason = ""
         let sem = DispatchSemaphore(value: 0)
-        let task = session.dataTask(with: request) { data, _, _ in
-            if let data = data {
+        let task = session.dataTask(with: request) { data, response, error in
+            if let data = data, !data.isEmpty {
                 out = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) ?? ""
+            }
+            if out.isEmpty {
+                if let e = error { failReason = e.localizedDescription }
+                else if let http = response as? HTTPURLResponse { failReason = "HTTP \(http.statusCode)" }
+                else { failReason = "空响应" }
             }
             sem.signal()
         }
         task.resume()
         _ = sem.wait(timeout: .now() + 16)
-        if out.isEmpty { task.cancel() }
+        if out.isEmpty {
+            task.cancel()
+            ErrorLog.append("海阔取页失败 \(url.host ?? "?")：\(failReason)")
+        }
         return out
     }
 }
