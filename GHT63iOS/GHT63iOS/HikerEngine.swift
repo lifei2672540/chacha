@@ -188,10 +188,13 @@ final class HikerEngine {
         return await withCheckedContinuation { cont in
             queue.async {
                 let box = HikerResultBox()
-                let context = self.makeContext(rule: rule, resolveMode: true, box: box)
-                context["MY_URL"] = myURL
-                context["MY_PAGE"] = myPage
-                context["MY_KEYWORD"] = myKeyword
+                guard let context = self.makeContext(rule: rule, resolveMode: true, box: box) else {
+                    cont.resume(returning: nil)
+                    return
+                }
+                context.setObject(myURL, forKeyedSubscript: "MY_URL" as NSString)
+                context.setObject(myPage, forKeyedSubscript: "MY_PAGE" as NSString)
+                context.setObject(myKeyword, forKeyedSubscript: "MY_KEYWORD" as NSString)
                 context.evaluateScript(script)
                 if context.exception != nil {
                     ErrorLog.append("海阔解析脚本异常 \(rule.name)")
@@ -206,10 +209,10 @@ final class HikerEngine {
 
     private func runSync(rule: HikerRule, script: String, myURL: String, myPage: Int, myKeyword: String, resolveMode: Bool) -> [HikerItem]? {
         let box = HikerResultBox()
-        let context = makeContext(rule: rule, resolveMode: resolveMode, box: box)
-        context["MY_URL"] = myURL
-        context["MY_PAGE"] = myPage
-        context["MY_KEYWORD"] = myKeyword
+        guard let context = makeContext(rule: rule, resolveMode: resolveMode, box: box) else { return nil }
+        context.setObject(myURL, forKeyedSubscript: "MY_URL" as NSString)
+        context.setObject(myPage, forKeyedSubscript: "MY_PAGE" as NSString)
+        context.setObject(myKeyword, forKeyedSubscript: "MY_KEYWORD" as NSString)
         context.evaluateScript(script)
         if let exc = context.exception {
             ErrorLog.append("海阔脚本异常 \(rule.name)：\(exc.toString() ?? "?")")
@@ -219,8 +222,8 @@ final class HikerEngine {
     }
 
     /// 新建一个 JSContext 并注入海阔接口：fetch（同步）、setResult、$().lazyRule。
-    private func makeContext(rule: HikerRule, resolveMode: Bool, box: HikerResultBox) -> JSContext {
-        let context = JSContext()
+    private func makeContext(rule: HikerRule, resolveMode: Bool, box: HikerResultBox) -> JSContext? {
+        guard let context = JSContext() else { return nil }
         context.exceptionHandler = { _, exc in
             ErrorLog.append("海阔 JS 异常 \(rule.name)：\(exc?.toString() ?? "?")")
         }
@@ -235,13 +238,13 @@ final class HikerEngine {
             }
             return self.syncFetch(urlString: urlString, headers: headers, rule: rule)
         }
-        context["fetch"] = fetchBlock
+        context.setObject(fetchBlock, forKeyedSubscript: "fetch" as NSString)
         // setResult(items)：收结果数组转 [HikerItem]。
         let setResultBlock: @convention(block) (JSValue) -> Void = { value in
             let raw: [Any] = value.toArray() ?? []
             box.items = raw.compactMap { ($0 as? [String: Any]).flatMap(HikerItem.init(dict:)) }
         }
-        context["setResult"] = setResultBlock
+        context.setObject(setResultBlock, forKeyedSubscript: "setResult" as NSString)
         // $().lazyRule(fn, arg)：浏览模式返回惰性标记，解析模式直接执行 fn(arg)。
         let lazyRuleBlock: @convention(block) (JSValue, JSValue) -> String = { fn, arg in
             let argString = arg.toString() ?? ""
@@ -251,7 +254,7 @@ final class HikerEngine {
             let encoded = argString.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? argString
             return "\(Self.lazyPrefix)\(rule.id)/\(encoded)"
         }
-        context["__hikerLazyRule"] = lazyRuleBlock
+        context.setObject(lazyRuleBlock, forKeyedSubscript: "__hikerLazyRule" as NSString)
         context.evaluateScript("function $() { return { lazyRule: __hikerLazyRule }; }")
         return context
     }
