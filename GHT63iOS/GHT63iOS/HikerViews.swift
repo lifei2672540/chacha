@@ -51,6 +51,7 @@ struct HikerHomeView: View {
                             TextField("https://…/规则.json", text: $newURL)
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled()
+                            Text("单个规则地址加一个；合集地址一次加多个。").font(.caption).foregroundColor(.secondary)
                         }
                         if !addError.isEmpty {
                             Text(addError).foregroundColor(.red).font(.caption)
@@ -81,11 +82,11 @@ struct HikerHomeView: View {
     private func addRule() async {
         adding = true
         defer { adding = false }
-        if await HikerStore.add(url: newURL) != nil {
+        if await HikerStore.add(url: newURL) > 0 {
             rules = HikerStore.all()
             showAdd = false
         } else {
-            addError = "加不上：地址打不开或不是规则 JSON"
+            addError = "加不上：地址打不开或不是规则/合集 JSON"
         }
     }
 }
