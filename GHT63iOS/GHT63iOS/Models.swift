@@ -7,6 +7,8 @@ struct Episode: Identifiable, Codable, Hashable {
     var id: String { title + "|" + url }
     var title: String
     var url: String
+    /// 播放请求头（海阔解析出的 Referer/User-Agent；CMS/PY 为空）。
+    var headers: [String: String] = [:]
 }
 
 struct PlayLine: Identifiable, Codable, Hashable {
