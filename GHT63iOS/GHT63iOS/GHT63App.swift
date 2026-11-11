@@ -46,6 +46,11 @@ struct GHT63App: App {
                     .preferredColorScheme(.light)
                     .tabItem { Label("设置", systemImage: "gear") }
                     .tag(4)
+                HikerHomeView()
+                    .toolbar(.hidden, for: .tabBar)
+                    .preferredColorScheme(.dark)
+                    .tabItem { Label("海阔", systemImage: "globe") }
+                    .tag(5)
             }
             .environmentObject(store)
             .environmentObject(tabNav)
@@ -69,7 +74,7 @@ struct GHT63App: App {
     }
 }
 
-/// 悬浮玻璃底栏：毛玻璃底 + 5 个入口，当前项红色高亮。
+/// 悬浮玻璃底栏：毛玻璃底 + 6 个入口，当前项红色高亮。
 private struct GlassTabBar: View {
     @Binding var selected: Int
     private let items = [
@@ -78,6 +83,7 @@ private struct GlassTabBar: View {
         ("采集站", "antenna.radiowaves.left.and.right"),
         ("Emby", "play.rectangle"),
         ("设置", "gear"),
+        ("海阔", "globe"),
     ]
     var body: some View {
         HStack(spacing: 0) {
