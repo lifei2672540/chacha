@@ -301,14 +301,14 @@ struct HikerStore {
     }
 
     /// 抓规则 JSON 解析标题后保存；标题空则用地址当名。同名规则覆盖旧的。
-    /// 失败返回 nil 并记日志。
-    static func add(url: String) async -> HikerRule? {
+    /// 地址也可以是合集：{"rules": [地址, ...]} 或 [地址, ...]，一次加多个。返回加上的个数，失败记日志。
+    static func add(url: String) async -> Int {
         let trimmed = url.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return nil }
+        guard !trimmed.isEmpty else { return 0 }
         let full = (trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://")) ? trimmed : "https://\(trimmed)"
         guard let u = URL(string: full) else {
             ErrorLog.append("海阔加规则失败：地址无效 \(trimmed)")
-            return nil
+            return 0
         }
         do {
             var request = URLRequest(url: u, timeoutInterval: 15)
@@ -316,23 +316,59 @@ struct HikerStore {
             let (data, _) = try await URLSession.shared.data(for: request)
             var text = String(data: data, encoding: .utf8) ?? ""
             if text.hasPrefix("\u{FEFF}") { text = String(text.dropFirst()) }
-            guard !text.isEmpty,
-                  let json = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else {
-                ErrorLog.append("海阔加规则失败：不是规则 JSON \(full)")
-                return nil
+            guard !text.isEmpty else { return 0 }
+            if let urls = Self.indexURLs(from: text), !urls.isEmpty {
+                var added = 0
+                for sub in urls { added += await Self.addOne(url: sub) }
+                return added
             }
-            let title = (json["title"] as? String ?? "").trimmingCharacters(in: .whitespaces)
-            let name = title.isEmpty ? full : title
-            let rule = HikerRule(id: HikerRule.slug(from: name), name: name, ruleURL: full, rawJSON: text)
-            var rules = all()
-            rules.removeAll { $0.id == rule.id }
-            rules.append(rule)
-            save(rules)
-            return rule
+            return Self.addOneText(text, url: full) ? 1 : 0
         } catch {
             ErrorLog.append("海阔加规则失败 \(full)：\(error)")
-            return nil
+            return 0
         }
+    }
+
+    /// 合集解析：{"rules": [...]} 或直接 [...]，元素全是地址字符串；不是合集返回 nil。
+    private static func indexURLs(from text: String) -> [String]? {
+        guard let data = text.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) else { return nil }
+        if let arr = obj as? [String] { return arr }
+        if let dict = obj as? [String: Any], let arr = dict["rules"] as? [String] { return arr }
+        return nil
+    }
+
+    /// 只加一条规则（不识别合集，避免合集套合集循环）。
+    private static func addOne(url: String) async -> Int {
+        let trimmed = url.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return 0 }
+        let full = (trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://")) ? trimmed : "https://\(trimmed)"
+        guard let u = URL(string: full) else { return 0 }
+        do {
+            var request = URLRequest(url: u, timeoutInterval: 15)
+            request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
+            let (data, _) = try await URLSession.shared.data(for: request)
+            var text = String(data: data, encoding: .utf8) ?? ""
+            if text.hasPrefix("\u{FEFF}") { text = String(text.dropFirst()) }
+            return Self.addOneText(text, url: full) ? 1 : 0
+        } catch { return 0 }
+    }
+
+    /// 把一段规则 JSON 文本存进列表；不是规则 JSON 返回 false。
+    private static func addOneText(_ text: String, url: String) -> Bool {
+        guard !text.isEmpty,
+              let json = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else {
+            ErrorLog.append("海阔加规则失败：不是规则 JSON \(url)")
+            return false
+        }
+        let title = (json["title"] as? String ?? "").trimmingCharacters(in: .whitespaces)
+        let name = title.isEmpty ? url : title
+        let rule = HikerRule(id: HikerRule.slug(from: name), name: name, ruleURL: url, rawJSON: text)
+        var rules = all()
+        rules.removeAll { $0.id == rule.id }
+        rules.append(rule)
+        save(rules)
+        return true
     }
 
     static func remove(id: String) {
