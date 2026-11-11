@@ -227,16 +227,33 @@ final class HikerEngine {
         context.exceptionHandler = { _, exc in
             ErrorLog.append("海阔 JS 异常 \(rule.name)：\(exc?.toString() ?? "?")")
         }
-        // fetch(url, {headers})：同步取页面，失败回空串（脚本里 try/catch 兜底）。
+        // fetch(url, {method, headers, body})：同步取页面，失败回空串（脚本里 try/catch 兜底）。
+        // body 可以是字符串，也可以是对象/数组（转 JSON 发）。
         let fetchBlock: @convention(block) (String, JSValue) -> String = { [weak self] urlString, options in
             guard let self = self else { return "" }
             var headers: [String: String] = [:]
-            if !options.isUndefined, let raw = options.forProperty("headers")?.toDictionary() {
-                for (k, v) in raw {
-                    if let ks = k as? String, let vs = v as? String { headers[ks] = vs }
+            var method = "GET"
+            var body: Data? = nil
+            if !options.isUndefined {
+                if let raw = options.forProperty("headers")?.toDictionary() {
+                    for (k, v) in raw {
+                        if let ks = k as? String, let vs = v as? String { headers[ks] = vs }
+                    }
+                }
+                if let m = options.forProperty("method")?.toString(), !m.isEmpty {
+                    method = m.uppercased()
+                }
+                if let bv = options.forProperty("body"), !bv.isUndefined, !bv.isNull {
+                    if bv.isArray, let arr = bv.toArray() {
+                        body = try? JSONSerialization.data(withJSONObject: arr)
+                    } else if bv.isObject, let dict = bv.toDictionary() {
+                        body = try? JSONSerialization.data(withJSONObject: dict)
+                    } else if let s = bv.toString() {
+                        body = s.data(using: .utf8)
+                    }
                 }
             }
-            return self.syncFetch(urlString: urlString, headers: headers, rule: rule)
+            return self.syncFetch(urlString: urlString, method: method, body: body, headers: headers, rule: rule)
         }
         context.setObject(fetchBlock, forKeyedSubscript: "fetch" as NSString)
         // setResult(items)：收结果数组转 [HikerItem]。
@@ -261,15 +278,21 @@ final class HikerEngine {
 
     /// 同步取页面（信号量 + 15 秒超时，跑在串行队列上，不会卡主线程）。
     /// 默认头：UA 取规则 ua（无则浏览器 UA），Referer 取规则地址的根；脚本自带头优先。
-    private func syncFetch(urlString: String, headers: [String: String], rule: HikerRule) -> String {
+    /// 带 body 时默认 Content-Type: application/json（脚本自己带了头就用脚本的）。
+    private func syncFetch(urlString: String, method: String = "GET", body: Data? = nil, headers: [String: String], rule: HikerRule) -> String {
         guard let url = URL(string: urlString) else { return "" }
         var request = URLRequest(url: url, timeoutInterval: 15)
+        request.httpMethod = method
+        request.httpBody = body
         var all: [String: String] = [:]
         all["User-Agent"] = rule.ua.isEmpty ? fallbackUA : rule.ua
         if let origin = URL(string: rule.ruleURL), let scheme = origin.scheme, let host = origin.host {
             all["Referer"] = "\(scheme)://\(host)/"
         }
         for (k, v) in headers { all[k] = v }
+        if body != nil && !all.keys.contains(where: { $0.lowercased() == "content-type" }) {
+            all["Content-Type"] = "application/json"
+        }
         for (k, v) in all { request.setValue(v, forHTTPHeaderField: k) }
         var out = ""
         let sem = DispatchSemaphore(value: 0)
