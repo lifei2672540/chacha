@@ -47,14 +47,19 @@ final class PlayerModel: ObservableObject {
     private var stallCount = 0
     private var reloadCount = 0
     private var pyTask: Task<Void, Never>?
+    /// 海阔解析任务（惰性地址解析中可取消，与 pyTask 同款）。
+    private var hikerTask: Task<Void, Never>?
+    /// 海阔解析器：惰性地址 → 真实地址 + 请求头（HikerDetailView 传入；其余入口为 nil）。
+    var hikerResolver: ((Episode) async -> Episode?)?
     private var sniffTask: Task<Void, Never>?
     private var tgLoader: TGResourceLoader?
 
-    init(group: VodGroup, sourceIdx: Int, lineIdx: Int, startEpisode: Episode) {
+    init(group: VodGroup, sourceIdx: Int, lineIdx: Int, startEpisode: Episode, hikerResolver: ((Episode) async -> Episode?)? = nil) {
         self.group = group
         self.currentSourceIdx = sourceIdx
         self.currentLineIdx = lineIdx
         self.currentEp = startEpisode
+        self.hikerResolver = hikerResolver
         self.speed = Store.shared.speed(for: group.name)
         ErrorLog.append("播放器创建 \(group.name) - \(startEpisode.title)")
     }
@@ -65,6 +70,8 @@ final class PlayerModel: ObservableObject {
     /// Telegram 组：流地址以采集端地址开头，本身就是直连地址，不走 GHT63 流代理
     /// （代理取不到局域网地址；TV 版 PlayerActivity.isTg 同款）。
     var isTG: Bool { currentEp.url.hasPrefix(ApiClient.shared.tgBaseUrl) }
+    /// 海阔组：集地址是 hiker://lazy/ 惰性标记，播放前先解析出真实地址（不走 CMS 直链、不走流代理）。
+    var isHiker: Bool { currentEp.url.hasPrefix("hiker://lazy/") }
     private var currentLine: PlayLine? {
         group.sources.indices.contains(currentSourceIdx)
             ? group.sources[currentSourceIdx].lines.indices.contains(currentLineIdx)
@@ -123,6 +130,12 @@ final class PlayerModel: ObservableObject {
         }
         if isTG {
             buildPlayTG()
+            return
+        }
+        // 海阔：惰性地址先解析出真实地址再播（解析失败直接报错，不走嗅探/代理）。
+        if isHiker {
+            hikerTask?.cancel()
+            hikerTask = Task { await buildPlayHiker() }
             return
         }
         // 直连且地址无媒体后缀时先嗅探（TV 版 PlayerActivity 同款）：
@@ -223,6 +236,35 @@ final class PlayerModel: ObservableObject {
             ErrorLog.append("PY解析失败 \(group.name) - \(currentEp.title) 线\(currentLineIdx)：\(error)")
             if pyAdvance() { buildPlay() } else { errorText = "PY解析失败：\(String("\(error)").prefix(120))" }
         }
+    }
+
+    /// 海阔：惰性地址调解析器取真实地址 + 请求头；失败直接报错，不换线路
+    /// （解析失败一般是该集需权益或站改了页面，换线路没用；用户点别的集重进）。
+    private func buildPlayHiker() async {
+        guard let resolver = hikerResolver else {
+            errorText = "海阔解析失败"
+            ErrorLog.append("海阔播不了：无解析器 \(group.name) - \(currentEp.title)")
+            return
+        }
+        guard !currentEp.url.isEmpty else {
+            errorText = "播放地址为空"
+            return
+        }
+        let resolved = await resolver(currentEp)
+        guard !Task.isCancelled else { return }
+        guard let resolved = resolved, !resolved.url.isEmpty else {
+            errorText = "海阔解析失败，换集试试"
+            ErrorLog.append("海阔解析失败 \(group.name) - \(currentEp.title)")
+            return
+        }
+        // 解析地址可能要百分号编码（buildPlayPY 同款写法）。
+        guard let url = URL(string: resolved.url) ?? URL(string: resolved.url.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? resolved.url) else {
+            errorText = "海阔解析失败，换集试试"
+            ErrorLog.append("海阔解析地址无效 \(group.name) - \(currentEp.title)")
+            return
+        }
+        ErrorLog.append("海阔播放 \(group.name) - \(currentEp.title) \(url.absoluteString)")
+        playURL(url, headers: resolved.headers.isEmpty ? nil : resolved.headers)
     }
 
     /// 播真实地址：PY 的防盗链头（Referer/UA）走 AVURLAsset 选项带上。
@@ -643,6 +685,7 @@ final class PlayerModel: ObservableObject {
         sniffTask?.cancel()
         stallTask?.cancel()
         pyTask?.cancel()
+        hikerTask?.cancel()
         tgLoader?.cancelAll()
         tgLoader = nil
         saveNow(seconds: player.currentTime().seconds)
@@ -1027,14 +1070,14 @@ struct PlayerView: View {
     @State private var showEpisodes = false
     @State private var showLines = false
 
-    init(group: VodGroup, sourceIdx: Int, lineIdx: Int, startEpisode: Episode, sourceLabel: String, lineLabel: String) {
+    init(group: VodGroup, sourceIdx: Int, lineIdx: Int, startEpisode: Episode, sourceLabel: String, lineLabel: String, hikerResolver: ((Episode) async -> Episode?)? = nil) {
         self.group = group
         self.sourceIdx = sourceIdx
         self.lineIdx = lineIdx
         self.startEpisode = startEpisode
         self.sourceLabel = sourceLabel
         self.lineLabel = lineLabel
-        _model = StateObject(wrappedValue: PlayerModel(group: group, sourceIdx: sourceIdx, lineIdx: lineIdx, startEpisode: startEpisode))
+        _model = StateObject(wrappedValue: PlayerModel(group: group, sourceIdx: sourceIdx, lineIdx: lineIdx, startEpisode: startEpisode, hikerResolver: hikerResolver))
     }
 
     private var progress: Double {
