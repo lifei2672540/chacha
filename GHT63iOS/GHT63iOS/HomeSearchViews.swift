@@ -687,19 +687,41 @@ struct ImmersiveHomeView: View {
 }
 
 /// 继续观看全部记录（最近观看本地上限 24 条，点开按剧名搜回详情）。
+/// “继续观看”全部列表：左滑删单条；工具栏有清空（带确认）和补海报。
 private struct RecentHistoryView: View {
     @EnvironmentObject var store: Store
+    @State private var showClearConfirm = false
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                ForEach(store.recents) { r in
-                    RecentCard(recent: r)
-                }
+        List {
+            ForEach(store.recents) { r in
+                RecentCard(recent: r)
             }
-            .padding()
+            .onDelete { idx in
+                let urls = idx.map { store.recents[$0].url }
+                for u in urls { store.removeRecent(url: u) }
+            }
         }
+        .scrollContentBackground(.hidden)
         .navigationTitle("继续观看")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button("🖼️ 补海报") { Task { await store.backfillRecentPics() } }
+                    .disabled(store.recents.isEmpty)
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button("清空") { showClearConfirm = true }
+                    .disabled(store.recents.isEmpty)
+            }
+        }
+        .alert("清空最近观看？", isPresented: $showClearConfirm) {
+            Button("取消", role: .cancel) { }
+            Button("清空", role: .destructive) { store.clearRecents() }
+        } message: {
+            Text("全部最近观看记录都会删掉，不能恢复。")
+        }
+        .task { await store.backfillRecentPics() }
     }
 }
 
@@ -712,6 +734,10 @@ private struct RecentCard: View {
                 AsyncImage(url: URL(string: recent.pic)) { phase in
                     switch phase {
                     case .success(let img): img.resizable().scaledToFill()
+                    case .failure:
+                        // 海报地址坏了（404 等）：只重试一次，清掉坏地址再回填（retryPoster 里防循环）。
+                        Color.gray.opacity(0.3)
+                            .onAppear { store.retryPoster(for: recent.drama) }
                     default: Color.gray.opacity(0.3)
                     }
                 }
