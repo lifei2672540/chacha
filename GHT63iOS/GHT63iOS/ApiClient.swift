@@ -169,6 +169,25 @@ final class ApiClient {
         return (total, items)
     }
 
+    // MARK: 云端字幕（网页版 autoFetchSubtitle 同款：proxy.php 问 assrt）
+    func getSubtitle(title: String) async throws -> (String, String) {
+        let q = query([("title", title)])
+        let root = try await getJSON("\(baseUrl)/proxy.php?action=get_subtitle&\(q)")
+        return (root["sub_url"] as? String ?? "", root["sub_name"] as? String ?? "")
+    }
+
+    /// 取字幕文件文本（UTF-8 优先，GBK 兜底）。
+    func fetchText(_ urlString: String) async throws -> String {
+        guard let url = URL(string: urlString) else { throw NSError(domain: "GHT63", code: -1, userInfo: [NSLocalizedDescriptionKey: "地址无效"]) }
+        var req = URLRequest(url: url, timeoutInterval: 30)
+        req.setValue(ua, forHTTPHeaderField: "User-Agent")
+        let (data, _) = try await URLSession.shared.data(for: req)
+        if let s = String(data: data, encoding: .utf8) { return s }
+        let gbk = CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(CFStringEncodings.GB_2312_80.rawValue))
+        if let s = String(data: data, encoding: String.Encoding(rawValue: gbk)) { return s }
+        return ""
+    }
+
     // MARK: 流代理（防盗链兜底，播放失败时用）
     func streamUrl(_ raw: String) -> String {
         "\(baseUrl)/proxy.php?stream_url=\(raw.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? raw)"
