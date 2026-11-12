@@ -9,6 +9,15 @@ final class Store: ObservableObject {
 
     @Published var recents: [RecentItem] = []
     @Published var favorites: [FavItem] = []
+    /// 追剧更新巡检结果（本机存，不走云端；网页版 fav_update_map 同款）。
+    @Published var favUpdates: [String: FavUpdateInfo] = [:]
+    /// 上次巡检时间戳（秒；网页版 fav_check_ts 同款，1 小时节流）。
+    var favCheckTs: Double {
+        get { UserDefaults.standard.double(forKey: "fav_check_ts") }
+        set { UserDefaults.standard.set(newValue, forKey: "fav_check_ts") }
+    }
+    /// 有更新的追剧部数（首页角标用）。
+    var favUpdateCount: Int { favUpdates.values.filter { $0.hasUpdate }.count }
     /// 本地进度：episode url -> (time, duration)
     @Published var localProgress: [String: (Double, Double)] = [:]
 
@@ -27,6 +36,11 @@ final class Store: ObservableObject {
            let v = try? dec.decode([String: [Double]].self, from: d) {
             localProgress = v.compactMapValues { $0.count >= 2 ? ($0[0], $0[1]) : nil }
         }
+        if let d = UserDefaults.standard.data(forKey: "fav_update_map"),
+           let v = try? dec.decode([String: FavUpdateInfo].self, from: d) { favUpdates = v }
+    }
+    private func saveFavUpdates() {
+        UserDefaults.standard.set(try? enc.encode(favUpdates), forKey: "fav_update_map")
     }
     private func saveLocal() {
         UserDefaults.standard.set(try? enc.encode(recents), forKey: "recents")
@@ -76,6 +90,46 @@ final class Store: ObservableObject {
             favorites.append(c)
         }
         saveLocal()
+    }
+    /// 改追剧分组（在追/已看完/想看）：本地存 + 云端同步。
+    func setFavStatus(name: String, status: String) {
+        guard let i = favorites.firstIndex(where: { $0.name == name }) else { return }
+        favorites[i].status = status
+        saveLocal()
+        Task { await ApiClient.shared.saveFavorites(favorites) }
+    }
+    /// 删追剧：本地删 + 云端同步。
+    func removeFavorite(name: String) {
+        favorites.removeAll { $0.name == name }
+        saveLocal()
+        Task { await ApiClient.shared.saveFavorites(favorites) }
+    }
+    /// 巡检结果写本机表（网页版 checkFavUpdates 同款）：已知集数优先 totalEps，
+    /// 没有就从 lastEp 抠数字；搜不到（latest <= 0）时不碰旧记录。
+    func applyFavUpdate(name: String, latest: Int) {
+        guard latest > 0, let i = favorites.firstIndex(where: { $0.name == name }) else { return }
+        var base = favorites[i].totalEps
+        if base <= 0 { base = episodeNumber(favorites[i].lastEp) ?? 0 }
+        favUpdates[name] = FavUpdateInfo(latest: latest, hasUpdate: base > 0 && latest > base)
+        saveFavUpdates()
+        if favorites[i].totalEps <= 0, base > 0 {
+            favorites[i].totalEps = base
+            saveLocal()
+            Task { await ApiClient.shared.saveFavorites(favorites) }
+        }
+    }
+    /// 播某集：记看至集名 + 当前线路集数；播到巡检到的最新集就当场清更新角标。
+    func recordFavPlay(name: String, epTitle: String, totalEps: Int) {
+        guard let i = favorites.firstIndex(where: { $0.name == name }) else { return }
+        favorites[i].lastEp = epTitle
+        favorites[i].totalEps = totalEps
+        saveLocal()
+        Task { await ApiClient.shared.saveFavorites(favorites) }
+        if let info = favUpdates[name], info.hasUpdate, info.latest > 0,
+           let n = episodeNumber(epTitle), n >= info.latest {
+            favUpdates[name] = FavUpdateInfo(latest: info.latest, hasUpdate: false)
+            saveFavUpdates()
+        }
     }
 
     // MARK: 按剧记忆：片头 / 片尾 / 倍速
