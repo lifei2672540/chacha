@@ -310,7 +310,7 @@ struct DetailView: View {
                         Button {
                             if let ep = resumeEp ?? line?.episodes.first {
                                 ErrorLog.append("点播放 \(group.name) - \(ep.title) url=\(ep.url)")
-                                playEp = ep
+                                recordPlay(ep)
                             } else {
                                 ErrorLog.append("点播放无集可播 \(group.name)")
                             }
@@ -328,7 +328,8 @@ struct DetailView: View {
                         }
                         .buttonStyle(.plain)
                         Button {
-                            let total = group.allEpisodes
+                            // 新追剧的集数取当前线路的集数，不是所有源线路之和（allEpisodes 会多算）。
+                            let total = eps.count
                             store.toggleFavorite(FavItem(name: group.name, pic: group.pic,
                                                          lastEp: resumeEp?.title ?? "", totalEps: total, status: "watching"))
                         } label: {
@@ -389,7 +390,7 @@ struct DetailView: View {
                                 ForEach(allSpeedResults) { r in
                                     Button {
                                         sourceIdx = r.sourceIdx; lineIdx = r.lineIdx; resetEpGroup()
-                                        playEp = r.episode
+                                        recordPlay(r.episode)
                                     } label: {
                                         HStack {
                                             Text(r.label).font(.subheadline)
@@ -433,7 +434,7 @@ struct DetailView: View {
                                 let isResume = resumeEp.map { $0 == ep } ?? false
                                 Button {
                                     ErrorLog.append("点选集 \(group.name) - \(ep.title) url=\(ep.url)")
-                                    playEp = ep
+                                    recordPlay(ep)
                                 } label: {
                                     VStack(spacing: 2) {
                                         Text(ep.title).font(.subheadline).lineLimit(1)
@@ -474,6 +475,14 @@ struct DetailView: View {
                        sourceLabel: group.sources[idx.0].sourceLabel,
                        lineLabel: group.sources[idx.0].lines[idx.1].label)
         }
+    }
+
+    /// 播某集：先记追剧（看至集名、当前线路集数），播到最新集就清更新角标，再开播放器。
+    private func recordPlay(_ ep: Episode) {
+        let idx = indices(for: ep)
+        let lineCount = group.sources[idx.0].lines[idx.1].episodes.count
+        store.recordFavPlay(name: group.name, epTitle: ep.title, totalEps: lineCount)
+        playEp = ep
     }
 
     /// 集所在的 (源下标, 线路下标)，找不到回落到当前选中。
