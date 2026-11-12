@@ -68,6 +68,42 @@ struct SectionRow: View {
     }
 }
 
+/// 我的追剧行：标题可点进清单页，标题旁挂红色“N 部更新”角标（有更新才显示）；
+/// 横排海报本身不动（放不下分组，清单页里分）。
+struct FavSectionRow: View {
+    @EnvironmentObject var store: Store
+    var groups: [VodGroup]
+    var body: some View {
+        if !groups.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                NavigationLink(destination: FollowListView()) {
+                    HStack(spacing: 6) {
+                        Text("我的追剧").font(.title3.bold()).foregroundColor(.white)
+                        if store.favUpdateCount > 0 {
+                            Text("\(store.favUpdateCount) 部更新")
+                                .font(.caption2.bold()).foregroundColor(.white)
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(Color.red).cornerRadius(8)
+                        }
+                        Image(systemName: "chevron.right").font(.caption).foregroundColor(.gray)
+                    }
+                    .padding(.horizontal)
+                }
+                .buttonStyle(.plain)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        ForEach(groups) { g in
+                            NavigationLink(value: g) { PosterCard(group: g) }
+                                .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal)
+                }
+            }
+        }
+    }
+}
+
 /// 首页横幅：大图 + 底部渐变 + 标题 + 播放入口。
 struct HeroBanner: View {
     var group: VodGroup
@@ -301,7 +337,7 @@ struct ClassicHomeView: View {
                     }
                 }
                 if !store.favorites.isEmpty {
-                    SectionRow(title: "我的追剧", groups: favGroups)
+                    FavSectionRow(groups: favGroups)
                 }
                 ForEach(data.catDefs, id: \.0) { def in
                     SectionRow(title: def.0, groups: data.cats[def.0] ?? [])
@@ -554,7 +590,7 @@ struct ImmersiveHomeView: View {
                             }
                         }
                         if !store.favorites.isEmpty {
-                            SectionRow(title: "我的追剧", groups: favGroups)
+                            FavSectionRow(groups: favGroups)
                         }
                         NavigationLink(destination: PyHomeView()) {
                             HStack {
