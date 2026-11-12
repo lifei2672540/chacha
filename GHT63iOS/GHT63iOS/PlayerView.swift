@@ -2,10 +2,19 @@ import SwiftUI
 import AVKit
 import Combine
 import UIKit
+import CoreImage
+import UniformTypeIdentifiers
 
 /// 播放器（TV 版 PlayerActivity 的触屏版）：
 /// AVPlayer 直播 HLS/MP4；断点取本地与云端的大者；每 10 秒存一次进度；
 /// 播完自动下一集；失败先走流代理兜底，再自动换线路/换源；片头片尾、倍速按剧记忆。
+/// 外挂字幕一条（SRT / VTT / ASS 解析后统一成起止秒 + 文本）。
+struct SubCue {
+    var start: Double
+    var end: Double
+    var text: String
+}
+
 @MainActor
 final class PlayerModel: ObservableObject {
     let group: VodGroup
@@ -27,6 +36,18 @@ final class PlayerModel: ObservableObject {
     @Published var videoSize: CGSize = .zero
     @Published var bitrate: Double = 0
     @Published var bufferedAhead: Double = 0
+    /// 手动清晰度：码率上限（0 = 自动），全局记忆。
+    @Published var qualityBps: Double = UserDefaults.standard.double(forKey: "qualityBps")
+    /// 当前真实播放地址（扫码观看 / 复制直链用）。
+    @Published var currentPlayURL: URL?
+    /// 外挂字幕：当前显示的一句（0.25 秒同步）、开关、状态。
+    @Published var subtitleText: String?
+    @Published var subtitleEnabled = true
+    @Published var subtitleStatus = "未检索"
+    private var subCues: [SubCue] = []
+    private var subCache: [String: [SubCue]] = [:]
+    private var subFetching = false
+    private var subTimeObs: Any?
 
     let player = AVPlayer()
     private var statusObs: NSKeyValueObservation?
@@ -100,6 +121,10 @@ final class PlayerModel: ObservableObject {
         timeObs = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 1, preferredTimescale: 1), queue: .main) { [weak self] t in
             Task { @MainActor in self?.tick(t.seconds) }
         }
+        // 字幕同步：0.25 秒找一次当前句（1 秒的 tick 太粗，短句会漏）。
+        subTimeObs = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { [weak self] t in
+            Task { @MainActor in self?.updateSubtitle(at: t.seconds) }
+        }
     }
 
     private func resolveURL() -> URL? {
@@ -120,6 +145,9 @@ final class PlayerModel: ObservableObject {
         videoSize = .zero
         bitrate = 0
         bufferedAhead = 0
+        subtitleText = nil
+        // 字幕：按剧名自动检索一次（缓存住，换集不重查）。
+        fetchSubtitleIfNeeded()
         watchdog?.cancel()
         sniffTask?.cancel()
         stallTask?.cancel()
@@ -269,6 +297,7 @@ final class PlayerModel: ObservableObject {
 
     /// 播真实地址：PY 的防盗链头（Referer/UA）走 AVURLAsset 选项带上。
     private func playURL(_ url: URL, headers: [String: String]?) {
+        currentPlayURL = url
         let item: AVPlayerItem
         if let headers = headers, !headers.isEmpty {
             let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
@@ -281,6 +310,8 @@ final class PlayerModel: ObservableObject {
 
     /// 接管一个已建好的 AVPlayerItem（直链、PY 解析地址、TG 边下边播共用后半段）。
     private func playItem(_ item: AVPlayerItem) {
+        // 手动清晰度：码率上限（0 = 自动），多码流才有效。
+        item.preferredPeakBitRate = qualityBps
         statusObs = item.observe(\.status, options: [.new]) { [weak self] it, _ in
             if it.status == .failed {
                 let err = String(describing: it.error)
@@ -621,6 +652,159 @@ final class PlayerModel: ObservableObject {
         videoGravity = videoGravity == .resizeAspect ? .resizeAspectFill : .resizeAspect
     }
 
+    /// 手动清晰度档位（码率上限，0 = 自动；多码流才有效，单码流不变）。
+    static let qualities: [(String, Double)] = [("自动", 0), ("1080p", 6_000_000), ("720p", 3_000_000), ("480p", 1_200_000), ("流畅", 600_000)]
+
+    func qualityLabel(_ bps: Double) -> String {
+        Self.qualities.first { $0.1 == bps }?.0 ?? "自动"
+    }
+
+    /// 手动清晰度：改码率上限，立即对当前播放器生效，全局记忆。
+    func setQuality(_ bps: Double) {
+        qualityBps = bps
+        UserDefaults.standard.set(bps, forKey: "qualityBps")
+        player.currentItem?.preferredPeakBitRate = bps
+        notice = "清晰度：\(qualityLabel(bps))"
+    }
+
+    /// 复制直链：把当前真实播放地址拷到剪贴板。
+    func copyPlayURL() {
+        guard let u = currentPlayURL else { notice = "暂无播放地址"; return }
+        UIPasteboard.general.string = u.absoluteString
+        notice = "已复制直链"
+    }
+
+    /// 字幕标题清洗（网页版同款）：取“ - ”前一段，去掉“第…集”。
+    private func cleanSubtitleTitle(_ name: String) -> String {
+        var clean = name.components(separatedBy: " - ").first ?? name
+        if let r = clean.range(of: "第.*集", options: .regularExpression) { clean.removeSubrange(r) }
+        return clean.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// 自动检索字幕（服务端 get_subtitle）：按剧名缓存，找不到就显示无字幕。
+    func fetchSubtitleIfNeeded() {
+        let key = group.name
+        if let cues = subCache[key] {
+            subCues = cues
+            subtitleStatus = cues.isEmpty ? "无字幕" : "已加载"
+            subtitleText = nil
+            return
+        }
+        guard !subFetching else { return }
+        subFetching = true
+        subtitleStatus = "正在找字幕…"
+        let title = cleanSubtitleTitle(key)
+        Task {
+            var cues: [SubCue] = []
+            var name = ""
+            do {
+                let (url, subName) = try await ApiClient.shared.getSubtitle(title: title)
+                name = subName
+                if !url.isEmpty {
+                    let text = try await ApiClient.shared.fetchText(url)
+                    cues = Self.parseSubtitle(text)
+                }
+            } catch {
+                // 检索失败 = 无字幕，不打扰播放。
+            }
+            subFetching = false
+            subCache[key] = cues
+            subCues = cues
+            subtitleStatus = cues.isEmpty ? "无字幕" : "已加载《\(name)》"
+            subtitleText = nil
+        }
+    }
+
+    /// 手动导入字幕文件：解析后按本剧缓存，直接显示。
+    func importSubtitleText(_ text: String, name: String) {
+        let cues = Self.parseSubtitle(text)
+        subCache[group.name] = cues
+        subCues = cues
+        subtitleEnabled = true
+        subtitleStatus = cues.isEmpty ? "该文件没有可用字幕" : "已导入《\(name)》"
+        subtitleText = nil
+    }
+
+    /// 字幕同步：0.25 秒找一次当前句，只在变化时刷新显示。
+    private func updateSubtitle(at t: Double) {
+        guard subtitleEnabled, !subCues.isEmpty, t.isFinite else {
+            if subtitleText != nil { subtitleText = nil }
+            return
+        }
+        let cur = subCues.first { t >= $0.start && t < $0.end }?.text
+        if cur != subtitleText { subtitleText = cur }
+    }
+
+    /// 解析 SRT / VTT / ASS，统一成起止秒 + 文本；ASS 只取 Dialogue 行，去掉花括号样式。
+    static func parseSubtitle(_ text: String) -> [SubCue] {
+        let clean = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+        if clean.contains("Dialogue:") {
+            var out: [SubCue] = []
+            for line in clean.components(separatedBy: "\n") {
+                guard line.hasPrefix("Dialogue:") else { continue }
+                let body = String(line.dropFirst("Dialogue:".count))
+                let parts = body.split(separator: ",", maxSplits: 9, omittingEmptySubsequences: false)
+                guard parts.count == 10,
+                      let s = srtTime(String(parts[1]).trimmingCharacters(in: .whitespaces)),
+                      let e = srtTime(String(parts[2]).trimmingCharacters(in: .whitespaces)) else { continue }
+                var t = String(parts[9])
+                t = t.replacingOccurrences(of: "\\{[^}]*\\}", with: "", options: .regularExpression)
+                t = t.replacingOccurrences(of: "\\N", with: "\n").replacingOccurrences(of: "\\n", with: "\n")
+                t = t.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !t.isEmpty { out.append(SubCue(start: s, end: e, text: t)) }
+            }
+            return out
+        }
+        var out: [SubCue] = []
+        let lines = clean.components(separatedBy: "\n")
+        var i = 0
+        while i < lines.count {
+            let line = lines[i].trimmingCharacters(in: .whitespaces)
+            if line.contains("-->") {
+                let segs = line.components(separatedBy: "-->")
+                if segs.count >= 2,
+                   let s = srtTime(segs[0].trimmingCharacters(in: .whitespaces)),
+                   let e = srtTime((segs[1].trimmingCharacters(in: .whitespaces).components(separatedBy: " ").first ?? "")) {
+                    var textLines: [String] = []
+                    var j = i + 1
+                    while j < lines.count {
+                        let t = lines[j].trimmingCharacters(in: .whitespaces)
+                        if t.isEmpty { break }
+                        // 下一条的序号或时间行就停（没空行分隔时防串行）。
+                        if Int(t) != nil || t.contains("-->") { break }
+                        textLines.append(stripSubTags(t))
+                        j += 1
+                    }
+                    let text = textLines.filter { !$0.isEmpty }.joined(separator: "\n")
+                    if !text.isEmpty { out.append(SubCue(start: s, end: e, text: text)) }
+                    i = j
+                    continue
+                }
+            }
+            i += 1
+        }
+        return out
+    }
+
+    /// 字幕时间：SRT 用逗号、VTT 用点，小时可省（00:01.000 这种两段也认）。
+    private static func srtTime(_ s: String) -> Double? {
+        let norm = s.replacingOccurrences(of: ",", with: ".")
+        let parts = norm.components(separatedBy: ":")
+        guard let sec = Double(parts.last ?? "") else { return nil }
+        if parts.count == 3, let h = Double(parts[0]), let m = Double(parts[1]) {
+            return h * 3600 + m * 60 + sec
+        }
+        if parts.count == 2, let m = Double(parts[0]) {
+            return m * 60 + sec
+        }
+        return parts.count == 1 ? sec : nil
+    }
+
+    /// 去字幕里的 <i> <font> 这类标签。
+    private static func stripSubTags(_ s: String) -> String {
+        s.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+    }
+
     /// 选集：同源同线路换集。
     func jumpToEpisode(_ ep: Episode) {
         reloadCount = 0
@@ -690,6 +874,7 @@ final class PlayerModel: ObservableObject {
         tgLoader = nil
         saveNow(seconds: player.currentTime().seconds)
         if let t = timeObs { player.removeTimeObserver(t) }
+        if let t = subTimeObs { player.removeTimeObserver(t) }
         if let e = endObs { NotificationCenter.default.removeObserver(e) }
         statusObs?.invalidate()
         sleepWork?.cancel()
@@ -1069,6 +1254,7 @@ struct PlayerView: View {
     @State private var hideTask: Task<Void, Never>?
     @State private var showEpisodes = false
     @State private var showLines = false
+    @State private var showMore = false
 
     init(group: VodGroup, sourceIdx: Int, lineIdx: Int, startEpisode: Episode, sourceLabel: String, lineLabel: String, hikerResolver: ((Episode) async -> Episode?)? = nil) {
         self.group = group
@@ -1229,7 +1415,7 @@ struct PlayerView: View {
                             Text(formatTime(model.duration))
                                 .font(.caption).foregroundColor(.white).frame(width: 44, alignment: .leading)
                         }
-                        // 功能行：左 倍速/画面，右 选集/线路/全屏
+                        // 功能行：左 倍速/画面/更多，右 选集/线路/全屏
                         HStack(spacing: 0) {
                             HStack(spacing: 10) {
                                 pillButton("倍速 \(model.speed == 1 ? "1" : "\(model.speed)")x") {
@@ -1238,6 +1424,7 @@ struct PlayerView: View {
                                 pillButton("画面 \(model.videoGravity == .resizeAspect ? "适应" : "填充")") {
                                     model.cycleGravity(); scheduleHide()
                                 }
+                                pillButton("更多") { showMore = true }
                             }
                             Spacer()
                             HStack(spacing: 10) {
@@ -1261,6 +1448,24 @@ struct PlayerView: View {
                     )
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            // 外挂字幕：控制条藏了也显示（字幕是画面的一部分）；点按穿透，不挡手势。
+            if model.subtitleEnabled, let sub = model.subtitleText {
+                VStack {
+                    Spacer()
+                    Text(sub)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundColor(.white)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 4)
+                        .background(Color.black.opacity(0.55))
+                        .cornerRadius(6)
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, showControls ? 140 : 48)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .allowsHitTesting(false)
             }
             // 锁定按钮：控制条显示时在右缘；锁定时单独留在右缘，点它解锁。
             if showControls || controlsLocked {
@@ -1291,6 +1496,7 @@ struct PlayerView: View {
         }
         .sheet(isPresented: $showEpisodes) { EpisodePickerSheet(model: model) }
         .sheet(isPresented: $showLines) { LinePickerSheet(model: model) }
+        .sheet(isPresented: $showMore) { MoreSheet(model: model) }
         .task { await model.start() }
     }
 
@@ -1417,6 +1623,95 @@ private struct LinePickerSheet: View {
             .navigationTitle("线路")
             .navigationBarTitleDisplayMode(.inline)
         }
+    }
+}
+
+/// 更多：手动清晰度 / 中文字幕 / 复制直链 / 扫码观看（网页版播放器补齐⑤）。
+private struct MoreSheet: View {
+    @ObservedObject var model: PlayerModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var showImporter = false
+    @State private var copied = false
+
+    private var subTypes: [UTType] {
+        ["srt", "vtt", "ass"].compactMap { UTType(filenameExtension: $0) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("清晰度") {
+                    Picker("清晰度", selection: Binding(get: { model.qualityBps }, set: { model.setQuality($0) })) {
+                        ForEach(PlayerModel.qualities, id: \.1) { q in
+                            Text(q.0).tag(q.1)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Text("多码流才有效，单码流不变；自动由播放器按网速选。")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+                Section("中文字幕") {
+                    Toggle("显示字幕", isOn: $model.subtitleEnabled)
+                    Text(model.subtitleStatus).font(.caption).foregroundColor(.secondary)
+                    Button("导入字幕文件（.srt / .vtt / .ass）") { showImporter = true }
+                }
+                Section("直链") {
+                    Button(copied ? "已复制 ✓" : "复制直链") {
+                        model.copyPlayURL()
+                        copied = true
+                    }
+                    .disabled(model.currentPlayURL == nil)
+                }
+                Section("扫码观看") {
+                    if let url = model.currentPlayURL, let img = qrImage(for: url.absoluteString) {
+                        HStack {
+                            Spacer()
+                            Image(uiImage: img)
+                                .resizable()
+                                .interpolation(.none)
+                                .frame(width: 200, height: 200)
+                            Spacer()
+                        }
+                        Text(url.absoluteString).font(.caption).foregroundColor(.secondary).lineLimit(3)
+                        Text("用另一台设备扫码播放").font(.caption).foregroundColor(.secondary)
+                    } else {
+                        Text("暂无播放地址").font(.caption).foregroundColor(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("更多")
+            .navigationBarTitleDisplayMode(.inline)
+            .fileImporter(isPresented: $showImporter, allowedContentTypes: subTypes, allowsMultipleSelection: false) { result in
+                guard case .success(let urls) = result, let url = urls.first else { return }
+                let accessing = url.startAccessingSecurityScopedResource()
+                defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                guard let data = try? Data(contentsOf: url) else { return }
+                let text = decodeSubData(data)
+                guard !text.isEmpty else { return }
+                model.importSubtitleText(text, name: url.deletingPathExtension().lastPathComponent)
+            }
+        }
+    }
+
+    /// 字幕文件解码：UTF-8 优先，GBK 兜底。
+    private func decodeSubData(_ data: Data) -> String {
+        if let s = String(data: data, encoding: .utf8) { return s }
+        let gbk = CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(CFStringEncodings.GB_2312_80.rawValue))
+        return String(data: data, encoding: String.Encoding(rawValue: gbk)) ?? ""
+    }
+
+    /// 二维码（CIQRCodeGenerator，M 纠错）。
+    private func qrImage(for string: String, size: CGFloat = 200) -> UIImage? {
+        guard let data = string.data(using: .utf8),
+              let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+        filter.setValue(data, forKey: "inputMessage")
+        filter.setValue("M", forKey: "inputCorrectionLevel")
+        guard let out = filter.outputImage else { return nil }
+        let scale = size / out.extent.width
+        let scaled = out.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let ctx = CIContext()
+        guard let cg = ctx.createCGImage(scaled, from: scaled.extent) else { return nil }
+        return UIImage(cgImage: cg)
     }
 }
 
