@@ -788,6 +788,9 @@ struct SearchView: View {
     private func clearFilter() { fType = ""; fYear = ""; fSort = .normal; fStatus = .all }
     /// 果鉴式最近搜索：本机存，最多 8 条，点词直接搜。
     @State private var recentKeywords: [String] = UserDefaults.standard.stringArray(forKey: "recentKeywords") ?? []
+    /// 搜索联想：输入停 400ms 后搜一页，取前 6 个不重复剧名当联想词（照电视版）。
+    @State private var suggestions: [String] = []
+    @State private var suggestTask: Task<Void, Never>?
     private let types = [("全部", ""), ("电影", "1"), ("剧集", "2"), ("综艺", "3"), ("动漫", "4")]
 
     var body: some View {
@@ -796,9 +799,36 @@ struct SearchView: View {
                 HStack {
                     TextField("搜剧名", text: $keyword, onCommit: { sub = nil; Task { await search(reset: true) } })
                         .textFieldStyle(.roundedBorder)
+                        .onChange(of: keyword) { _ in scheduleSuggestions() }
                     Button("搜索") { sub = nil; Task { await search(reset: true) } }
                 }
                 .padding()
+                if !suggestions.isEmpty {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(suggestions, id: \.self) { s in
+                            Button {
+                                keyword = s
+                                suggestions = []
+                                sub = nil
+                                Task { await search(reset: true) }
+                            } label: {
+                                HStack {
+                                    Text(s).foregroundColor(.primary)
+                                    Spacer()
+                                }
+                                .padding(.vertical, 8)
+                                .padding(.horizontal)
+                            }
+                            .buttonStyle(.plain)
+                            if s != suggestions.last {
+                                Divider().padding(.leading)
+                            }
+                        }
+                    }
+                    .background(Color(.secondarySystemBackground))
+                    .cornerRadius(10)
+                    .padding(.horizontal)
+                }
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack {
                         ForEach(types, id: \.1) { t in
@@ -872,7 +902,37 @@ struct SearchView: View {
         .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 76) }
     }
 
+    /// 输入联想：停 400ms 后搜一页，取前 6 个不重复剧名；失败静默留空。
+    private func scheduleSuggestions() {
+        suggestTask?.cancel()
+        let kw = keyword.trimmingCharacters(in: .whitespaces)
+        guard !kw.isEmpty else { suggestions = []; return }
+        suggestTask = Task {
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled else { return }
+            do {
+                let (found, _, _) = try await ApiClient.shared.search(wd: kw, type: type, pg: 1)
+                guard !Task.isCancelled else { return }
+                // 只认当前还在输入的词：用户又改了词就丢弃这次结果。
+                guard keyword.trimmingCharacters(in: .whitespaces) == kw else { return }
+                var seen = Set<String>()
+                var out: [String] = []
+                for g in found {
+                    let n = g.name.trimmingCharacters(in: .whitespaces)
+                    if n.isEmpty || seen.contains(n) { continue }
+                    seen.insert(n)
+                    out.append(n)
+                    if out.count >= 6 { break }
+                }
+                suggestions = out
+            } catch {
+                // 联想失败不打扰：静默留空。
+            }
+        }
+    }
+
     private func search(reset: Bool) async {
+        suggestions = []
         if reset {
             page = 1; groups = []; clearFilter()
             // 子类优先：keyword 类子类用它的关键词，其余子类 id 当 type 传。
