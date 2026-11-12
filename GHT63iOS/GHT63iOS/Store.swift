@@ -61,6 +61,71 @@ final class Store: ObservableObject {
     }
     func clearRecents() { recents = []; saveLocal() }
 
+    /// 补海报进行中的剧名（防重复发起；网页版 _picFilling 同款）。
+    private var picFilling: Set<String> = []
+    /// 海报失败已重试过的剧名（只重试一次，防循环；网页版 _picRetried 同款）。
+    private var picRetried: Set<String> = []
+
+    /// 最近观看补海报（网页版 runRecentPicBackfill 同款）：挑 pic 为空的条，
+    /// 按剧名搜一次，优先同名且有海报的，否则取第一个有海报的；3 路并发。
+    func backfillRecentPics() async {
+        let missing = recents.filter { $0.pic.isEmpty && !picFilling.contains($0.drama) }
+        guard !missing.isEmpty else { return }
+        for r in missing { picFilling.insert(r.drama) }
+        let disabled = (try? await ApiClient.shared.homeDisabled()) ?? []
+        var idx = 0
+        while idx < missing.count {
+            let chunk = Array(missing[idx..<min(idx + 3, missing.count)])
+            let results = await withTaskGroup(of: (String, String?).self) { g in
+                for r in chunk {
+                    g.addTask { (r.drama, await Self.fetchPoster(for: r.drama, disabled: disabled)) }
+                }
+                var out: [(String, String?)] = []
+                for await res in g { out.append(res) }
+                return out
+            }
+            for (drama, pic) in results {
+                picFilling.remove(drama)
+                if let pic = pic { applyPoster(drama: drama, pic: pic) }
+            }
+            idx += 3
+        }
+    }
+
+    /// 单部补海报（海报加载失败重试一次时用）。
+    func backfillPoster(for drama: String) async {
+        guard !picFilling.contains(drama) else { return }
+        picFilling.insert(drama)
+        let disabled = (try? await ApiClient.shared.homeDisabled()) ?? []
+        let pic = await Self.fetchPoster(for: drama, disabled: disabled)
+        picFilling.remove(drama)
+        if let pic = pic { applyPoster(drama: drama, pic: pic) }
+    }
+
+    /// 按剧名搜海报：优先同名且有海报的组，否则取第一个有海报的组；搜不到返回 nil。
+    private static func fetchPoster(for drama: String, disabled: [String]) async -> String? {
+        guard let (groups, _, _) = try? await ApiClient.shared.search(wd: drama, type: "", pg: 1, disabled: disabled) else { return nil }
+        if let g = groups.first(where: { $0.name == drama && !$0.pic.isEmpty }) { return g.pic }
+        return groups.first(where: { !$0.pic.isEmpty })?.pic
+    }
+
+    /// 海报写回该条并存盘（只填空的，不覆盖已有海报）。
+    private func applyPoster(drama: String, pic: String) {
+        guard let i = recents.firstIndex(where: { $0.drama == drama && $0.pic.isEmpty }) else { return }
+        recents[i].pic = pic
+        saveLocal()
+    }
+
+    /// 海报加载失败时调：这部剧还没重试过就清掉坏地址、回填一次；重试过的不再动。
+    func retryPoster(for drama: String) {
+        guard !picRetried.contains(drama) else { return }
+        picRetried.insert(drama)
+        guard let i = recents.firstIndex(where: { $0.drama == drama }) else { return }
+        recents[i].pic = ""
+        saveLocal()
+        Task { await backfillPoster(for: drama) }
+    }
+
     // MARK: 进度（本地 + 云端取大者）
     func resumeTime(for url: String, cloud: [String: ProgressRec]) -> Double {
         let local = localProgress[url]?.0 ?? 0
