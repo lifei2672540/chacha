@@ -6,7 +6,6 @@ struct FollowListView: View {
     @EnvironmentObject var store: Store
     @State private var filter = "all"
     @State private var checking = false
-    @State private var selectedFav: FavItem?
 
     private var filtered: [FavItem] {
         filter == "all" ? store.favorites : store.favorites.filter { $0.status == filter }
@@ -39,7 +38,7 @@ struct FollowListView: View {
                 } else {
                     VStack(spacing: 10) {
                         ForEach(filtered) { fav in
-                            FollowRow(fav: fav) { selectedFav = fav }
+                            FollowRow(fav: fav)
                         }
                     }
                     .padding(.horizontal)
@@ -51,7 +50,7 @@ struct FollowListView: View {
         }
         .navigationTitle("我的追剧")
         .navigationBarTitleDisplayMode(.inline)
-        .navigationDestination(item: $selectedFav) { fav in FavDetailLoader(fav: fav) }
+        .navigationDestination(for: FavItem.self) { fav in FavDetailLoader(fav: fav) }
         .task { await checkFavUpdates() }
     }
 
@@ -95,7 +94,6 @@ struct FollowListView: View {
 private struct FollowRow: View {
     @EnvironmentObject var store: Store
     var fav: FavItem
-    var onSelect: () -> Void
 
     private var statusName: String {
         switch fav.status {
@@ -107,7 +105,7 @@ private struct FollowRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Button(action: onSelect) {
+            NavigationLink(value: fav) {
                 HStack(spacing: 12) {
                     AsyncImage(url: URL(string: fav.pic)) { phase in
                         switch phase {
