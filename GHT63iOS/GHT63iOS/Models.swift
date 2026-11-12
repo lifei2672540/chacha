@@ -48,6 +48,8 @@ struct VodGroup: Identifiable, Codable, Hashable {
     var vodId: String = ""
 
     var allEpisodes: Int { sources.flatMap { $0.lines }.flatMap { $0.episodes }.count }
+    /// 单条线路集数最大值（追剧巡检用；allEpisodes 是所有源线路之和，会多算）。
+    var maxLineEpisodes: Int { sources.flatMap { $0.lines }.map { $0.episodes.count }.max() ?? 0 }
 }
 
 /// 按剧名聚合（与 TV 版 groupByName 一致）：同名不同源并到一组。
@@ -133,6 +135,18 @@ struct FavItem: Identifiable, Codable, Hashable {
                 status: (o["status"] as? String ?? "").isEmpty ? "watching" : (o["status"] as? String ?? ""),
                 hasUpdate: o["hasUpdate"] as? Bool ?? false)
     }
+}
+
+/// 追剧更新巡检结果（本机存，不走云端）：最新集数 + 是否有更新。
+struct FavUpdateInfo: Codable, Hashable {
+    var latest: Int
+    var hasUpdate: Bool
+}
+
+/// 集标题里抠第一个数字（“第12集”→12、“EP12”→12；电影类“正片”→nil，与网页版 /(\d+)/ 同款）。
+func episodeNumber(_ title: String) -> Int? {
+    guard let r = title.range(of: "\\d+", options: .regularExpression) else { return nil }
+    return Int(title[r])
 }
 
 struct RecentItem: Identifiable, Codable, Hashable {
