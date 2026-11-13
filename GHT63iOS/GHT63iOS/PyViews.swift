@@ -61,9 +61,24 @@ enum PyAPI {
 
     static func script(api: String) async throws -> String {
         if let c = cacheQueue.sync(execute: { scriptCache[api] }) { return c }
-        let code = try await fetchText(api)
+        let code: String
+        if api.hasPrefix("local://") {
+            let file = String(api.dropFirst("local://".count))
+            let url = SpiderGen.localDir().appendingPathComponent(file)
+            guard let s = try? String(contentsOf: url, encoding: .utf8) else {
+                throw PySpider.PyError.bridge("本地蜘蛛文件读不到：\(file)")
+            }
+            code = s
+        } else {
+            code = try await fetchText(api)
+        }
         cacheQueue.sync { scriptCache[api] = code }
         return code
+    }
+
+    /// 生成器重写本地蜘蛛后清掉旧缓存，下次读新文件。
+    static func forgetScript(api: String) {
+        cacheQueue.sync { scriptCache.removeValue(forKey: api) }
     }
 
     /// 桥调用必须离主线程：PySpider.run 是同步调用，蜘蛛里有网络时会堵住调用线程。
@@ -173,27 +188,58 @@ enum PyAPI {
 
 struct PyHomeView: View {
     @State private var sources: [PySource] = []
+    @State private var localSources: [PySource] = []
     @State private var loading = false
     @State private var error: String?
     var body: some View {
         Group {
-            if loading && sources.isEmpty {
+            if loading && sources.isEmpty && localSources.isEmpty {
                 ProgressView()
-            } else if let error = error, sources.isEmpty {
-                Text(error).foregroundColor(.red).padding()
             } else {
                 List {
                     Section {
-                        ForEach(sources) { s in
-                            NavigationLink(destination: PyBrowseView(source: s)) {
-                                Text(s.displayName).foregroundColor(.white)
-                            }
+                        NavigationLink(destination: SpiderGenView()) {
+                            Label("生成蜘蛛", systemImage: "wand.and.stars")
+                                .foregroundColor(.white)
                         }
-                    } header: {
-                        Text("PY 订阅（\(sources.count) 个源，纯 Python 子集）").foregroundColor(.gray)
                     } footer: {
-                        Text("要 Crypto/lxml、或走 HTTPS 的源会显示原因（扩展模块在 AltStore 签名下加载不了），不闪退。")
+                        Text("粘一个站的网址，爬页面认分类与内容链接，一键生成 py 蜘蛛，存成本地源。")
                             .foregroundColor(.gray)
+                    }
+                    if !localSources.isEmpty {
+                        Section {
+                            ForEach(localSources) { s in
+                                NavigationLink(destination: PyBrowseView(source: s)) {
+                                    Text(s.displayName).foregroundColor(.white)
+                                }
+                            }
+                            .onDelete { idx in
+                                for i in idx { SpiderGen.deleteLocalSource(localSources[i]) }
+                                localSources = SpiderGen.localSources()
+                            }
+                        } header: {
+                            Text("本地生成（\(localSources.count) 个源）").foregroundColor(.gray)
+                        } footer: {
+                            Text("左滑可删。同一站重复生成会覆盖旧文件。").foregroundColor(.gray)
+                        }
+                    }
+                    if let error = error, sources.isEmpty {
+                        Section {
+                            Text(error).foregroundColor(.red)
+                        }
+                    } else {
+                        Section {
+                            ForEach(sources) { s in
+                                NavigationLink(destination: PyBrowseView(source: s)) {
+                                    Text(s.displayName).foregroundColor(.white)
+                                }
+                            }
+                        } header: {
+                            Text("PY 订阅（\(sources.count) 个源，纯 Python 子集）").foregroundColor(.gray)
+                        } footer: {
+                            Text("要 Crypto/lxml、或走 HTTPS 的源会显示原因（扩展模块在 AltStore 签名下加载不了），不闪退。")
+                                .foregroundColor(.gray)
+                        }
                     }
                 }
             }
@@ -204,8 +250,10 @@ struct PyHomeView: View {
     private func load() async {
         loading = true
         defer { loading = false }
+        localSources = SpiderGen.localSources()
         do {
             sources = try await PyAPI.subscription()
+            error = nil
         } catch {
             self.error = "订阅加载失败：\(error)"
         }
