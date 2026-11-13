@@ -107,6 +107,8 @@ private struct SiteBrowseView: View {
     @State private var groups: [VodGroup] = []
     @State private var page = 1
     @State private var pageCount = 1
+    /// 服务端总数（原始条数，去重前；取不到时为 0，不显示）。
+    @State private var totalRecords = 0
     @State private var loading = false
     @State private var loaded = false
     @State private var error: String?
@@ -182,6 +184,12 @@ private struct SiteBrowseView: View {
                     Text("该站暂无内容").foregroundColor(.secondary).padding()
                 }
                 if !groups.isEmpty {
+                    HStack {
+                        Text("第 \(page - 1) / \(pageCount) 页 · 已加载 \(groups.count) 部" + (totalRecords > 0 ? " · 共检索到 \(totalRecords) 条" : ""))
+                            .font(.caption).foregroundColor(.secondary)
+                        Spacer()
+                    }
+                    .padding(.horizontal)
                     Button {
                         if page < pageCount && !loading {
                             Task { await browse(reset: false) }
@@ -223,16 +231,17 @@ private struct SiteBrowseView: View {
     }
 
     private func browse(reset: Bool) async {
-        if reset { page = 1; groups = []; clearFilter() }
+        if reset { page = 1; groups = []; clearFilter(); totalRecords = 0 }
         loading = true
         error = nil
         let wantType = effectiveType
         do {
             let disabled = allNames.filter { $0 != station.name }
-            let (found, _, pc) = try await ApiClient.shared.search(wd: "", type: effectiveType, pg: page, disabled: disabled)
+            let (found, _, pc, total) = try await ApiClient.shared.search(wd: "", type: effectiveType, pg: page, disabled: disabled)
             guard wantType == effectiveType else { loading = false; return }
             groups.append(contentsOf: found)
             pageCount = pc
+            totalRecords = total
             page += 1
         } catch {
             self.error = "加载失败：\(error.localizedDescription)"
@@ -403,7 +412,7 @@ struct SettingsView: View {
                 Section {
                     Text("端侧 PY 正在接入：解释器与蜘蛛桥已就绪，订阅浏览界面下一阶段来；Jar 不在 iOS 路线内。")
                         .font(.caption).foregroundColor(.secondary)
-                    Text("茶茶点播 iOS 1.5.9（原生版）").font(.caption).foregroundColor(.secondary)
+                    Text("茶茶点播 iOS 1.5.10（原生版）").font(.caption).foregroundColor(.secondary)
                     Text("内嵌 Python：\(PyRuntime.version)").font(.caption).foregroundColor(.secondary)
                     if !savedNote.isEmpty { Text(savedNote).font(.caption).foregroundColor(.green) }
                 }
