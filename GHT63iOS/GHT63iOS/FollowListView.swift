@@ -84,7 +84,7 @@ struct FollowListView: View {
     }
 
     private static func latestEpisodes(for name: String, disabled: [String]) async -> Int? {
-        guard let (groups, _, _) = try? await ApiClient.shared.search(wd: name, type: "", pg: 1, disabled: disabled) else { return nil }
+        guard let (groups, _, _, _) = try? await ApiClient.shared.search(wd: name, type: "", pg: 1, disabled: disabled) else { return nil }
         var latest = 0
         for g in groups where g.name == name { latest = max(latest, g.maxLineEpisodes) }
         return latest > 0 ? latest : nil
@@ -164,7 +164,7 @@ private struct FavDetailLoader: View {
         }
         .task {
             do {
-                let (groups, _, _) = try await ApiClient.shared.search(wd: fav.name, type: "", pg: 1)
+                let (groups, _, _, _) = try await ApiClient.shared.search(wd: fav.name, type: "", pg: 1)
                 group = groups.first { $0.name == fav.name } ?? groups.first
                 if group == nil { error = "源里没搜到这部" }
             } catch {
