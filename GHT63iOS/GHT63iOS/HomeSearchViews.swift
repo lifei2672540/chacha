@@ -225,7 +225,7 @@ final class HomeData: ObservableObject {
             // 首页资源站点：只用这一个站出首页各分类（空 = 全部站聚合）。
             let disabled = try await ApiClient.shared.homeDisabled()
             for def in catDefs {
-                let (groups, _, _) = try await ApiClient.shared.search(wd: def.1, type: def.2, pg: 1, disabled: disabled)
+                let (groups, _, _, _) = try await ApiClient.shared.search(wd: def.1, type: def.2, pg: 1, disabled: disabled)
                 cats[def.0] = groups
             }
         } catch {
@@ -666,7 +666,7 @@ struct ImmersiveHomeView: View {
             // 子类优先：keyword 类子类走关键词搜索，其余子类 id 直接当 type 传。
             let wd = chipSub?.keyword ?? ""
             let type = chipSub?.typeId ?? chipParent
-            let (found, _, pc) = try await ApiClient.shared.search(wd: wd, type: type, pg: gridPage, disabled: try await ApiClient.shared.homeDisabled())
+            let (found, _, pc, _) = try await ApiClient.shared.search(wd: wd, type: type, pg: gridPage, disabled: try await ApiClient.shared.homeDisabled())
             gridGroups.append(contentsOf: found)
             gridPageCount = pc
             gridPage += 1
@@ -790,7 +790,7 @@ private struct RecentDetailLoader: View {
                 return
             }
             do {
-                let (groups, _, _) = try await ApiClient.shared.search(wd: recent.drama, type: "", pg: 1)
+                let (groups, _, _, _) = try await ApiClient.shared.search(wd: recent.drama, type: "", pg: 1)
                 group = groups.first { $0.name == recent.drama } ?? groups.first
                 if group == nil { error = "没搜到这部剧" }
             } catch {
@@ -817,7 +817,7 @@ private struct TrendDetailLoader: View {
         }
         .task {
             do {
-                let (groups, _, _) = try await ApiClient.shared.search(wd: item.title, type: "", pg: 1)
+                let (groups, _, _, _) = try await ApiClient.shared.search(wd: item.title, type: "", pg: 1)
                 group = groups.first { $0.name == item.title } ?? groups.first
                 if group == nil { error = "源里没搜到这部" }
             } catch {
@@ -837,6 +837,8 @@ struct SearchView: View {
     @State private var groups: [VodGroup] = []
     @State private var page = 1
     @State private var pageCount = 1
+    /// 服务端总数（原始条数，去重前；取不到时为 0，不显示）。
+    @State private var totalRecords = 0
     @State private var loading = false
     @State private var error: String?
     /// 当页筛选（只筛已加载的 groups，不多请求）。
@@ -844,10 +846,35 @@ struct SearchView: View {
     @State private var fYear = ""
     @State private var fSort = PageSort.normal
     @State private var fStatus = PageStatus.all
-    private var filteredGroups: [VodGroup] { filterGroups(groups, type: fType, year: fYear, sort: fSort, status: fStatus) }
-    private var filterTypes: [String] { Array(Set(groups.map { $0.typeName }.filter { !$0.isEmpty })).sorted() }
-    private var filterYears: [String] { Array(Set(groups.map { $0.year }.filter { !$0.isEmpty })).sorted(by: >) }
+    /// 源筛选（只筛显示，不改 group.sources，详情页仍能全源切换）。
+    @State private var selectedSource = ""
+    /// 源筛后的 groups（先按源筛，再按当页筛选）。
+    private var sourceFilteredGroups: [VodGroup] {
+        selectedSource.isEmpty ? groups : groups.filter { $0.sources.contains { $0.sourceLabel == selectedSource } }
+    }
+    private var filteredGroups: [VodGroup] { filterGroups(sourceFilteredGroups, type: fType, year: fYear, sort: fSort, status: fStatus) }
+    /// 每源计数（按已加载 groups 的 sources 累计，与网页版口径一致；不随源筛变）。
+    private var sourceCounts: [(label: String, count: Int)] {
+        var map: [String: Int] = [:]
+        var order: [String] = []
+        for g in groups {
+            for s in g.sources {
+                if map[s.sourceLabel] == nil { order.append(s.sourceLabel) }
+                map[s.sourceLabel, default: 0] += 1
+            }
+        }
+        return order.map { (label: $0, count: map[$0] ?? 0) }
+    }
+    private var filterTypes: [String] { Array(Set(sourceFilteredGroups.map { $0.typeName }.filter { !$0.isEmpty })).sorted() }
+    private var filterYears: [String] { Array(Set(sourceFilteredGroups.map { $0.year }.filter { !$0.isEmpty })).sorted(by: >) }
     private func clearFilter() { fType = ""; fYear = ""; fSort = .normal; fStatus = .all }
+    /// 分页行文案：“第 X / Y 页 · 已加载 N 部 · 共检索到 M 条”（M 取不到时不显示）。
+    private var pageLine: String {
+        var s = "第 \(page - 1) / \(pageCount) 页 · 已加载 \(groups.count) 部"
+        if totalRecords > 0 { s += " · 共检索到 \(totalRecords) 条" }
+        return s
+    }
+
     /// 果鉴式最近搜索：本机存，最多 8 条，点词直接搜。
     @State private var recentKeywords: [String] = UserDefaults.standard.stringArray(forKey: "recentKeywords") ?? []
     /// 搜索联想：输入停 400ms 后搜一页，取前 6 个不重复剧名当联想词（照电视版）。
@@ -941,7 +968,25 @@ struct SearchView: View {
                     .padding(.horizontal)
                 }
                 if !groups.isEmpty {
-                    PageFilterBar(type: $fType, year: $fYear, sort: $fSort, status: $fStatus, types: filterTypes, years: filterYears, total: groups.count, shown: filteredGroups.count) { clearFilter() }
+                    if sourceCounts.count > 1 {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack {
+                                Button("全部 (\(sourceCounts.reduce(0) { $0 + $1.count }))") { selectedSource = "" }
+                                    .buttonStyle(.borderedProminent).tint(selectedSource.isEmpty ? .red : .gray)
+                                ForEach(sourceCounts, id: \.label) { c in
+                                    Button("\(c.label) (\(c.count))") { selectedSource = c.label }
+                                        .buttonStyle(.borderedProminent).tint(selectedSource == c.label ? .red : .gray)
+                                }
+                            }
+                            .padding(.horizontal)
+                        }
+                    }
+                    HStack {
+                        Text(pageLine).font(.caption).foregroundColor(.secondary)
+                        Spacer()
+                    }
+                    .padding(.horizontal)
+                    PageFilterBar(type: $fType, year: $fYear, sort: $fSort, status: $fStatus, types: filterTypes, years: filterYears, total: sourceFilteredGroups.count, shown: filteredGroups.count) { clearFilter() }
                 }
                 ScrollView {
                     VodGrid(groups: filteredGroups).padding()
@@ -973,7 +1018,7 @@ struct SearchView: View {
             try? await Task.sleep(nanoseconds: 400_000_000)
             guard !Task.isCancelled else { return }
             do {
-                let (found, _, _) = try await ApiClient.shared.search(wd: kw, type: type, pg: 1)
+                let (found, _, _, _) = try await ApiClient.shared.search(wd: kw, type: type, pg: 1)
                 guard !Task.isCancelled else { return }
                 // 只认当前还在输入的词：用户又改了词就丢弃这次结果。
                 guard keyword.trimmingCharacters(in: .whitespaces) == kw else { return }
@@ -997,6 +1042,7 @@ struct SearchView: View {
         suggestions = []
         if reset {
             page = 1; groups = []; clearFilter()
+            selectedSource = ""; totalRecords = 0
             // 子类优先：keyword 类子类用它的关键词，其余子类 id 当 type 传。
             let k = (sub?.keyword ?? keyword).trimmingCharacters(in: .whitespaces)
             if !k.isEmpty {
@@ -1011,9 +1057,10 @@ struct SearchView: View {
         do {
             let wd = sub?.keyword ?? keyword
             let t = sub?.typeId ?? type
-            let (found, _, pc) = try await ApiClient.shared.search(wd: wd, type: t, pg: page)
+            let (found, _, pc, total) = try await ApiClient.shared.search(wd: wd, type: t, pg: page)
             groups.append(contentsOf: found)
             pageCount = pc
+            totalRecords = total
             page += 1
         } catch {
             self.error = "搜索失败：\(error.localizedDescription)"
