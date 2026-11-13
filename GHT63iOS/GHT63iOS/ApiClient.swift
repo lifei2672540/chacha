@@ -55,12 +55,17 @@ final class ApiClient {
         return comps.percentEncodedQuery ?? ""
     }
 
-    // MARK: 搜索（返回聚合组、页码、总页数）
-    func search(wd: String, type: String, pg: Int, disabled: [String] = []) async throws -> ([VodGroup], Int, Int) {
+    // MARK: 搜索（返回聚合组、页码、总页数、服务端总数）
+    func search(wd: String, type: String, pg: Int, disabled: [String] = []) async throws -> ([VodGroup], Int, Int, Int) {
         let q = query([("wd", wd), ("type", type), ("pg", "\(pg)"), ("disabled_sources", disabled.joined(separator: ","))])
         let root = try await getJSON("\(baseUrl)/proxy.php?\(q)")
         let list = (root["list"] as? [[String: Any]]) ?? []
-        return (groupByName(list), root["page"] as? Int ?? pg, root["pagecount"] as? Int ?? 1)
+        let total: Int
+        if let t = root["total"] as? Int { total = t }
+        else if let s = root["total"] as? String, let t = Int(s) { total = t }
+        else if let d = root["total"] as? Double { total = Int(d) }
+        else { total = 0 }
+        return (groupByName(list), root["page"] as? Int ?? pg, root["pagecount"] as? Int ?? 1, total)
     }
 
     // MARK: 云端进度
