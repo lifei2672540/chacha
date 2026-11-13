@@ -106,6 +106,13 @@ enum SpiderGen {
         return utilPaths.contains { path.hasPrefix($0 + "/") }
     }
 
+    /// 语言切换链接（如 /zh、/en、/zh_TW），不是分类也不是内容。
+    private static func isLangPath(_ last: String) -> Bool {
+        let langs: Set<String> = ["zh", "en", "zh_tw", "zh_cn", "zh_hk", "ja", "ko",
+                                  "fr", "de", "es", "pt", "ru", "th", "vi", "id", "ms"]
+        return langs.contains(last.lowercased())
+    }
+
     // MARK: - 爬取与识别
 
     static func crawl(urlString: String) async throws -> CrawlResult {
@@ -204,11 +211,19 @@ enum SpiderGen {
             guard let url = URL(string: u) else { continue }
             let path = url.path.isEmpty ? "/" : url.path
             let parent = parentOf(path)
+            let last = path.split(separator: "/").map(String.init).filter { !$0.isEmpty }.last ?? ""
             if contentParents.contains(parent) {
-                contentLinks.append(GenLink(url: url, text: t))
+                // 根目录常混着视频与栏目：非编号的根链接是栏目，不是内容。
+                if parent == "/" && !looksLikeId(last) {
+                    if !isUtilPath(path) && !isLangPath(last) {
+                        let name = t.isEmpty ? last : t
+                        categories.append(GenCategory(name: name, url: path, included: true))
+                    }
+                } else {
+                    contentLinks.append(GenLink(url: url, text: t))
+                }
             } else {
-                let last = path.split(separator: "/").map(String.init).filter { !$0.isEmpty }.last ?? ""
-                if !looksLikeId(last) && !isUtilPath(path) {
+                if !looksLikeId(last) && !isUtilPath(path) && !isLangPath(last) {
                     let name = t.isEmpty ? last : t
                     categories.append(GenCategory(name: name, url: path, included: true))
                 }
@@ -216,12 +231,12 @@ enum SpiderGen {
         }
         contentLinks.sort { $0.url.absoluteString < $1.url.absoluteString }
         categories.sort { $0.url < $1.url }
-        // 内容正则（只对 path 匹配，防跨站绝对地址误中）
+        // 内容正则（只对 path 匹配，防跨站绝对地址误中；根目录只写一次斜杠）
         let contentRe: String
         if contentParents.isEmpty {
             contentRe = ""
         } else {
-            let parts = contentParents.map { NSRegularExpression.escapedPattern(for: $0) + #"/[^\"/]+"# }
+            let parts = contentParents.map { ($0 == "/" ? "" : NSRegularExpression.escapedPattern(for: $0)) + #"/[^\"/]+"# }
             contentRe = "(?:" + parts.joined(separator: "|") + ")"
         }
         // 搜索表单
@@ -385,6 +400,15 @@ class Spider(BaseSpider):
             return out
         seen = set()
         site_host = urllib.parse.urlparse(SITE).netloc
+        cat_paths = set()
+        for c in CLASSES:
+            tid = str(c.get("type_id") or "")
+            if tid.startswith("http://") or tid.startswith("https://"):
+                cat_paths.add(urllib.parse.urlparse(tid).path or "")
+            elif tid:
+                cat_paths.add(tid)
+        generic = {"在線看", "在线看", "觀看", "观看", "播放", "詳情", "详情",
+                   "更多", "查看", "線上看", "线上看", "看片", "watermark"}
         for m in re.finditer(r'<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', html, re.S | re.I):
             href = m.group(1)
             url = self._fix_url(href)
@@ -393,13 +417,45 @@ class Spider(BaseSpider):
             u = urllib.parse.urlparse(url)
             if u.netloc != site_host:
                 continue
-            if not re.search(CONTENT_RE, u.path or ""):
+            path = u.path or ""
+            if not re.search(CONTENT_RE, path):
+                continue
+            if path in cat_paths:
                 continue
             seen.add(url)
             inner = m.group(2)
-            im = re.search(r'<img[^>]+(?:data-src|src)="([^"]+)"', inner)
-            pic = self._fix_url(im.group(1)) if im else ""
-            title = self._clean_text(inner)
+            pic = ""
+            alt = ""
+            for im in re.finditer(r"<img[^>]+>", inner):
+                tag = im.group(0)
+                ds = (re.search(r'data-src="([^"]+)"', tag)
+                      or re.search(r'data-original="([^"]+)"', tag)
+                      or re.search(r'data-lazy-src="([^"]+)"', tag))
+                sr = re.search(r'\ssrc="([^"]+)"', tag)
+                al = re.search(r'alt="([^"]*)"', tag)
+                cand = ds.group(1) if ds else (sr.group(1) if sr else "")
+                if not cand:
+                    continue
+                low = cand.lower()
+                if "button_logo" in low or "no_preview" in low:
+                    continue
+                pic = self._fix_url(cand)
+                alt = self._unesc(al.group(1)).strip() if al else ""
+                if ds:
+                    break
+            last = path.rstrip("/").split("/")[-1]
+            if not pic:
+                continue
+            title = ""
+            if alt and alt.lower() != "watermark":
+                title = alt
+            if not title:
+                t = self._clean_text(inner)
+                if t and t not in generic:
+                    title = t
+            if not title:
+                title = last
+            title = re.sub(r"\s+", " ", title).strip()
             if not title:
                 continue
             out.append({
@@ -542,7 +598,7 @@ class Spider(BaseSpider):
         if contentParent.isEmpty {
             contentRe = result.contentRe
         } else {
-            contentRe = "(?:" + NSRegularExpression.escapedPattern(for: contentParent) + #"/[^\"/]+)"#
+            contentRe = "(?:" + (contentParent == "/" ? "" : NSRegularExpression.escapedPattern(for: contentParent)) + #"/[^\"/]+)"#
         }
         return spiderTemplate
             .replacingOccurrences(of: "__SITE__", with: result.siteBase)
