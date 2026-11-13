@@ -104,7 +104,7 @@ final class Store: ObservableObject {
 
     /// 按剧名搜海报：优先同名且有海报的组，否则取第一个有海报的组；搜不到返回 nil。
     private static func fetchPoster(for drama: String, disabled: [String]) async -> String? {
-        guard let (groups, _, _) = try? await ApiClient.shared.search(wd: drama, type: "", pg: 1, disabled: disabled) else { return nil }
+        guard let (groups, _, _, _) = try? await ApiClient.shared.search(wd: drama, type: "", pg: 1, disabled: disabled) else { return nil }
         if let g = groups.first(where: { $0.name == drama && !$0.pic.isEmpty }) { return g.pic }
         return groups.first(where: { !$0.pic.isEmpty })?.pic
     }
