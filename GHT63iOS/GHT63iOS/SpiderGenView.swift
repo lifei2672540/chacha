@@ -282,7 +282,8 @@ enum SpiderGen {
     // MARK: - 模板（已离线验过）与生成
 
     /// 生成的 py 蜘蛛模板。占位符由 buildSpiderCode 替换。模板本身不含中文注释。
-    private static let spiderTemplate = #"""import re
+    private static let spiderTemplate = #"""
+import re
 import urllib.parse
 import urllib.request
 
