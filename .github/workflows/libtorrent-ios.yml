@@ -1,0 +1,255 @@
+# =============================================================================
+# Build libtorrent iOS XCFramework (arm64 device slice ONLY)
+# =============================================================================
+# Purpose: compile the libtorrent engine for the GHT63 iOS app (magnet link
+# feature, step 1). Produces libtorrent_flutter.xcframework with a single
+# ios-arm64 slice, uploaded as a workflow artifact.
+#
+# Trigger: MANUAL ONLY (workflow_dispatch). It is NOT coupled to the app
+# build (.github/workflows/ios.yml) and never runs on push.
+#
+# --- Dependency versions + download URLs (all pinned, all verified live) ---
+# libtorrent 2.1.2 (latest stable 2.1.x, 2026-11-17)
+#   https://github.com/arvidn/libtorrent/archive/refs/tags/v2.1.2.tar.gz
+#   NOTE: the release-asset URL .../releases/download/v2.1.2/libtorrent-2.1.2.tar.gz
+#   returns 404 (no asset attached to that release), so use the auto-generated
+#   archive/refs/tags URL above, which always works for any tag.
+# OpenSSL 3.5.5 (current 3.5 LTS)
+#   https://github.com/openssl/openssl/releases/download/openssl-3.5.5/openssl-3.5.5.tar.gz
+# Boost 1.89.0 (headers only; only the tiny system lib is compiled)
+#   https://archives.boost.io/release/1.89.0/source/boost_1_89_0.tar.gz
+# ios-cmake toolchain 4.6.1 (leetal/ios-cmake)
+#   https://raw.githubusercontent.com/leetal/ios-cmake/4.6.1/ios.toolchain.cmake
+# Bridge sources (torrent_bridge.cpp / torrent_bridge.h) are NOT downloaded:
+# they must already be in the repo at GHT63iOS/libtorrent/ before triggering.
+# Upload them there first (they are not in the chacha repo yet).
+#
+# --- IMPORTANT: cannot be verified locally ---
+# There is no Mac in the sandbox, so this workflow has NEVER been run.
+# It must be triggered in CI (Actions tab -> this workflow -> Run workflow)
+# to find out whether it works. Every step uses `set -e` so the first
+# failing command stops the job and points at the broken step.
+# See BUILD_NOTES.md for the chain, the known pitfalls, and where to look
+# first when a step fails.
+#
+# --- Known deliberate choices (see BUILD_NOTES.md for the why) ---
+# * OpenSSL is built with target `darwin64-arm64-cc` + -isysroot +
+#   -miphoneos-version-min. The old `./Configure ios64-cross` target was
+#   REMOVED in OpenSSL 3.x (verified: no ios64-cross in 3.5.5
+#   Configurations/10-main.conf); do NOT put it back.
+# * libtorrent is built with -Dwebtorrent=OFF. WebTorrent defaults ON in
+#   2.1.x and would pull in libdatachannel/libjuice/usrsctp (WebRTC) deps.
+# * libtorrent is built with -Ddeprecated-functions=ON (the v1 ABI).
+#   The bridge uses plain `lt::` (190 uses, zero `lt::v2::`), so the v2
+#   namespace (TORRENT_NO_DEPRECATE) must NOT be enabled.
+# * Boost: only headers + a compiled libboost_system.a. CMake's FindBoost
+#   requires the system library file to exist even though Boost.System has
+#   been header-only since 1.69, so the (tiny) system sources are compiled
+#   for iOS arm64 in this workflow.
+# * The bridge is compiled directly with clang++ (NOT via its CMakeLists.txt),
+#   because that CMakeLists builds a SHARED lib and its APPLE branch looks
+#   for Homebrew paths, neither of which fits an iOS static XCFramework.
+# =============================================================================
+
+name: Build libtorrent iOS XCFramework
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    env:
+      LIBTORRENT_VERSION: "2.1.2"
+      OPENSSL_VERSION: "3.5.5"
+      BOOST_VERSION: "1.89.0"
+      IOS_CMAKE_VERSION: "4.6.1"
+      DEPLOYMENT_TARGET: "13.0"
+      LIBTORRENT_URL: "https://github.com/arvidn/libtorrent/archive/refs/tags/v2.1.2.tar.gz"
+      OPENSSL_URL: "https://github.com/openssl/openssl/releases/download/openssl-3.5.5/openssl-3.5.5.tar.gz"
+      BOOST_URL: "https://archives.boost.io/release/1.89.0/source/boost_1_89_0.tar.gz"
+      IOS_CMAKE_URL: "https://raw.githubusercontent.com/leetal/ios-cmake/4.6.1/ios.toolchain.cmake"
+      WORK: ${{ github.workspace }}/ltbuild
+      BRIDGE_DIR: ${{ github.workspace }}/GHT63iOS/libtorrent
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          set -e
+          xcodebuild -version
+          echo "iOS SDK: $(xcrun --sdk iphoneos --show-sdk-path)"
+          cmake --version | head -1
+          perl -v | head -2 | tail -1
+          echo "CPUs: $(sysctl -n hw.ncpu)"
+
+      - name: Prepare work dir and fetch ios-cmake toolchain
+        run: |
+          set -e
+          mkdir -p "$WORK"
+          cd "$WORK"
+          curl -fL --retry 5 --retry-delay 10 --retry-all-errors \
+            -o ios.toolchain.cmake "$IOS_CMAKE_URL"
+          test -s ios.toolchain.cmake
+          grep -q "OS64" ios.toolchain.cmake
+          echo "ios-cmake toolchain OK"
+
+      - name: Fetch Boost headers and build libboost_system.a
+        run: |
+          set -e
+          cd "$WORK"
+          curl -fL --retry 5 --retry-delay 10 --retry-all-errors \
+            -o boost.tar.gz "$BOOST_URL"
+          mkdir -p boost_src
+          tar xzf boost.tar.gz -C boost_src --strip-components=1
+          test -f boost_src/boost/version.hpp
+          grep -q "1_89" boost_src/boost/version.hpp
+          echo "Boost headers OK"
+          # libtorrent's CMake runs find_package(Boost REQUIRED COMPONENTS system).
+          # CMake's FindBoost insists the library file exists even though
+          # Boost.System has been header-only since 1.69, so compile the
+          # (tiny) system sources for iOS arm64. If the src dir ever becomes
+          # empty (fully header-only), fall back to an empty stub object.
+          SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
+          mkdir -p "$WORK/boost_lib"
+          OBJS=""
+          cd "$WORK/boost_src/libs/system/src"
+          for f in *.cpp; do
+            [ -f "$f" ] || continue
+            xcrun --sdk iphoneos clang++ -arch arm64 -isysroot "$SDKROOT" \
+              -miphoneos-version-min="$DEPLOYMENT_TARGET" -std=c++17 -O2 \
+              -I"$WORK/boost_src" -c "$f" \
+              -o "$WORK/boost_lib/$(basename "$f" .cpp).o"
+            OBJS="$OBJS $WORK/boost_lib/$(basename "$f" .cpp).o"
+          done
+          if [ -z "$OBJS" ]; then
+            echo 'int boost_system_stub;' > "$WORK/boost_lib/stub.c"
+            xcrun --sdk iphoneos clang -arch arm64 -isysroot "$SDKROOT" \
+              -miphoneos-version-min="$DEPLOYMENT_TARGET" \
+              -c "$WORK/boost_lib/stub.c" -o "$WORK/boost_lib/stub.o"
+            OBJS="$WORK/boost_lib/stub.o"
+          fi
+          ar rcs "$WORK/boost_lib/libboost_system.a" $OBJS
+          lipo -info "$WORK/boost_lib/libboost_system.a"
+
+      - name: Build OpenSSL for iOS arm64
+        run: |
+          set -e
+          cd "$WORK"
+          curl -fL --retry 5 --retry-delay 10 --retry-all-errors \
+            -o openssl.tar.gz "$OPENSSL_URL"
+          mkdir -p openssl_src
+          tar xzf openssl.tar.gz -C openssl_src --strip-components=1
+          cd openssl_src
+          SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
+          # NOTE: `ios64-cross` does not exist in OpenSSL 3.x. The 3.x way is
+          # the darwin64-arm64-cc target plus the iOS SDK sysroot and the
+          # minimum iOS version. Do not reintroduce ios64-cross.
+          CC="xcrun --sdk iphoneos clang" ./Configure darwin64-arm64-cc \
+            no-shared no-tests \
+            --prefix="$WORK/openssl-ios" \
+            -isysroot "$SDKROOT" \
+            -miphoneos-version-min="$DEPLOYMENT_TARGET"
+          make -j"$(sysctl -n hw.ncpu)"
+          make install_sw
+          test -f "$WORK/openssl-ios/lib/libssl.a"
+          test -f "$WORK/openssl-ios/lib/libcrypto.a"
+          test -f "$WORK/openssl-ios/include/openssl/ssl.h"
+          lipo -info "$WORK/openssl-ios/lib/libssl.a"
+          lipo -info "$WORK/openssl-ios/lib/libcrypto.a"
+
+      - name: Build libtorrent for iOS arm64
+        run: |
+          set -e
+          cd "$WORK"
+          curl -fL --retry 5 --retry-delay 10 --retry-all-errors \
+            -o libtorrent.tar.gz "$LIBTORRENT_URL"
+          mkdir -p libtorrent_src
+          tar xzf libtorrent.tar.gz -C libtorrent_src --strip-components=1
+          test -f libtorrent_src/CMakeLists.txt
+          cmake -S libtorrent_src -B build-libtorrent \
+            -DCMAKE_TOOLCHAIN_FILE="$WORK/ios.toolchain.cmake" \
+            -DPLATFORM=OS64 \
+            -DDEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -Ddeprecated-functions=ON \
+            -Dencryption=ON \
+            -Dwebtorrent=OFF \
+            -Ddht=ON \
+            -Dbuild_tests=OFF \
+            -Dbuild_examples=OFF \
+            -Dbuild_tools=OFF \
+            -Dpython-bindings=OFF \
+            -DOPENSSL_ROOT_DIR="$WORK/openssl-ios" \
+            -DBoost_INCLUDE_DIR="$WORK/boost_src" \
+            -DBoost_LIBRARY_DIR="$WORK/boost_lib" \
+            -DCMAKE_INSTALL_PREFIX="$WORK/libtorrent-ios"
+          cmake --build build-libtorrent -j"$(sysctl -n hw.ncpu)"
+          cmake --install build-libtorrent
+          test -f "$WORK/libtorrent-ios/lib/libtorrent-rasterbar.a"
+          test -f "$WORK/libtorrent-ios/include/libtorrent/session.hpp"
+          lipo -info "$WORK/libtorrent-ios/lib/libtorrent-rasterbar.a"
+
+      - name: Build torrent_bridge for iOS arm64
+        run: |
+          set -e
+          test -f "$BRIDGE_DIR/torrent_bridge.cpp"
+          test -f "$BRIDGE_DIR/torrent_bridge.h"
+          SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
+          mkdir -p "$WORK/bridge"
+          # Direct clang++ compile (not the repo CMakeLists.txt: that file
+          # builds a SHARED lib and its APPLE branch looks for Homebrew paths).
+          # No TORRENT_NO_DEPRECATE: the bridge uses the plain lt:: (v1) ABI.
+          xcrun --sdk iphoneos clang++ -arch arm64 -isysroot "$SDKROOT" \
+            -miphoneos-version-min="$DEPLOYMENT_TARGET" \
+            -std=c++17 -O2 -fPIC \
+            -I"$WORK/boost_src" \
+            -I"$WORK/libtorrent-ios/include" \
+            -I"$WORK/openssl-ios/include" \
+            -I"$BRIDGE_DIR" \
+            -c "$BRIDGE_DIR/torrent_bridge.cpp" \
+            -o "$WORK/bridge/torrent_bridge.o"
+          ar rcs "$WORK/bridge/libtorrent_bridge.a" "$WORK/bridge/torrent_bridge.o"
+          lipo -info "$WORK/bridge/libtorrent_bridge.a"
+          # C API symbols must be present (extern "C", unmangled).
+          nm -gU "$WORK/bridge/libtorrent_bridge.a" | grep -q "lt_create_session"
+          nm -gU "$WORK/bridge/libtorrent_bridge.a" | grep -q "lt_add_magnet"
+          nm -gU "$WORK/bridge/libtorrent_bridge.a" | grep -q "lt_start_stream"
+          echo "bridge C API symbols OK"
+
+      - name: Merge into one static lib and create XCFramework
+        run: |
+          set -e
+          cd "$WORK"
+          libtool -static -o liblibtorrent_flutter.a \
+            bridge/libtorrent_bridge.a \
+            libtorrent-ios/lib/libtorrent-rasterbar.a \
+            openssl-ios/lib/libssl.a \
+            openssl-ios/lib/libcrypto.a \
+            boost_lib/libboost_system.a
+          lipo -info liblibtorrent_flutter.a
+          ls -lh liblibtorrent_flutter.a
+          mkdir -p xcframework_headers
+          cp "$BRIDGE_DIR/torrent_bridge.h" xcframework_headers/
+          xcodebuild -create-xcframework \
+            -library liblibtorrent_flutter.a \
+            -headers xcframework_headers \
+            -output libtorrent_flutter.xcframework
+          echo "--- XCFramework layout ---"
+          find libtorrent_flutter.xcframework -type f | sort
+          echo "--- final lib arch + C API symbols ---"
+          lipo -info libtorrent_flutter.xcframework/ios-arm64/liblibtorrent_flutter.a
+          nm -gU libtorrent_flutter.xcframework/ios-arm64/liblibtorrent_flutter.a \
+            | grep -E "lt_create_session|lt_add_magnet|lt_start_stream|lt_get_stream_status" | head
+
+      - name: Upload XCFramework artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libtorrent-ios-xcframework
+          path: ltbuild/libtorrent_flutter.xcframework
+          if-no-files-found: error
+          retention-days: 30
