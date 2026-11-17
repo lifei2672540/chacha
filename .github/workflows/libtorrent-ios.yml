@@ -213,10 +213,17 @@ jobs:
           mkdir -p "$WORK/bridge"
           # Direct clang++ compile (not the repo CMakeLists.txt: that file
           # builds a SHARED lib and its APPLE branch looks for Homebrew paths).
-          # No TORRENT_NO_DEPRECATE: the bridge uses the plain lt:: (v1) ABI.
+          # The bridge MUST be compiled with the same PUBLIC feature defines
+          # libtorrent's CMake build sets, or config.hpp disagrees with the
+          # library: TORRENT_USE_OPENSSL + TORRENT_USE_LIBCRYPTO (built with
+          # OpenSSL), TORRENT_USE_RTC=0 (webtorrent OFF), TORRENT_ABI_VERSION=2
+          # (deprecated-functions ON = plain lt:: v1 ABI). Without them the
+          # bridge defaults to RTC=1, SSL=0 and config.hpp #errors out.
           xcrun --sdk iphoneos clang++ -arch arm64 -isysroot "$SDKROOT" \
             -miphoneos-version-min="$DEPLOYMENT_TARGET" \
             -std=c++17 -O2 -fPIC \
+            -DTORRENT_USE_OPENSSL -DTORRENT_USE_LIBCRYPTO \
+            -DTORRENT_USE_RTC=0 -DTORRENT_ABI_VERSION=2 \
             -I"$WORK/boost_src" \
             -I"$WORK/libtorrent-ios/include" \
             -I"$WORK/openssl-ios/include" \
