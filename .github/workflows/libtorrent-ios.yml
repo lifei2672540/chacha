@@ -111,20 +111,26 @@ jobs:
           # libtorrent's CMake runs find_package(Boost REQUIRED COMPONENTS system).
           # CMake's FindBoost insists the library file exists even though
           # Boost.System has been header-only since 1.69, so compile the
-          # (tiny) system sources for iOS arm64. If the src dir ever becomes
-          # empty (fully header-only), fall back to an empty stub object.
+          # (tiny) system sources for iOS arm64. In Boost 1.89 the src dir
+          # is gone entirely (not just empty), so guard the cd: under
+          # set -e an unguarded cd kills the step before the stub fallback.
           SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
           mkdir -p "$WORK/boost_lib"
           OBJS=""
-          cd "$WORK/boost_src/libs/system/src"
-          for f in *.cpp; do
-            [ -f "$f" ] || continue
-            xcrun --sdk iphoneos clang++ -arch arm64 -isysroot "$SDKROOT" \
-              -miphoneos-version-min="$DEPLOYMENT_TARGET" -std=c++17 -O2 \
-              -I"$WORK/boost_src" -c "$f" \
-              -o "$WORK/boost_lib/$(basename "$f" .cpp).o"
-            OBJS="$OBJS $WORK/boost_lib/$(basename "$f" .cpp).o"
-          done
+          SYS_SRC="$WORK/boost_src/libs/system/src"
+          if [ -d "$SYS_SRC" ]; then
+            cd "$SYS_SRC"
+            for f in *.cpp; do
+              [ -f "$f" ] || continue
+              xcrun --sdk iphoneos clang++ -arch arm64 -isysroot "$SDKROOT" \
+                -miphoneos-version-min="$DEPLOYMENT_TARGET" -std=c++17 -O2 \
+                -I"$WORK/boost_src" -c "$f" \
+                -o "$WORK/boost_lib/$(basename "$f" .cpp).o"
+              OBJS="$OBJS $WORK/boost_lib/$(basename "$f" .cpp).o"
+            done
+          else
+            echo "No libs/system/src in this Boost (header-only); using stub lib"
+          fi
           if [ -z "$OBJS" ]; then
             echo 'int boost_system_stub;' > "$WORK/boost_lib/stub.c"
             xcrun --sdk iphoneos clang -arch arm64 -isysroot "$SDKROOT" \
