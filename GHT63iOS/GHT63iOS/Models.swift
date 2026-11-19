@@ -205,16 +205,22 @@ struct TgVideo: Identifiable, Hashable {
     var duration: Double
     var thumbUrl: String
     var streamUrl: String
+    /// 剧名与集号（服务端 v2 聚合字段；平铺接口同样带，缺失时为空/0）。
+    var show: String = ""
+    var episodeNo: Int = 0
+
+    /// 选集按钮文案：有集号显示“第 N 集”，否则显示原标题（TV 版 epLabel 同款）。
+    func episodeLabel() -> String {
+        if episodeNo > 0 { return "第\(episodeNo)集" }
+        return title
+    }
 
     func metaLine() -> String {
         [fmtTgDuration(duration), String(date.prefix(10))].filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
     /// 相对路径按采集端地址拼绝对地址；绝对地址与空串原样返回（TV 同款）。
-    func absUrl(_ base: String, _ u: String) -> String {
-        if u.isEmpty || u.hasPrefix("http://") || u.hasPrefix("https://") { return u }
-        return base.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + u
-    }
+    func absUrl(_ base: String, _ u: String) -> String { tgAbsUrl(base, u) }
 
     /// 单视频成组：标题即剧名，单源单线单集，点片直进播放器（TV 同款，不走详情页）；
     /// 进度与最近观看按流地址记（播放器本就按集地址记）。
@@ -225,6 +231,31 @@ struct TgVideo: Identifiable, Hashable {
         return VodGroup(name: title, pic: absUrl(base, thumbUrl), typeName: "Telegram",
                         year: String(date.prefix(4)), content: caption, sources: [src])
     }
+}
+
+/// Telegram 剧聚合（采集端 /api/shows 同款，与 TV 版 TgShow 一致）。
+struct TgShow: Identifiable, Hashable {
+    var id: String
+    var name: String
+    var epCount: Int
+    var total: Int
+    var cover: String
+    var latest: String
+    var channels: [String]
+
+    /// 成组：剧名即组名，首源备注“共 N 集”作卡片角标；采集端无海报，pic 留空。
+    func toGroup(base: String) -> VodGroup {
+        let src = VodSource(sourceLabel: "Telegram", remarks: "共 \(epCount) 集", actor: "", director: "",
+                            lines: [PlayLine(lineIndex: 1, episodes: [], label: "")])
+        return VodGroup(name: name, pic: tgAbsUrl(base, cover), typeName: "Telegram",
+                        year: String(latest.prefix(4)), content: "", sources: [src])
+    }
+}
+
+/// 相对路径按采集端地址拼绝对地址；绝对地址与空串原样返回（TV 同款）。
+func tgAbsUrl(_ base: String, _ u: String) -> String {
+    if u.isEmpty || u.hasPrefix("http://") || u.hasPrefix("https://") { return u }
+    return base.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + u
 }
 
 func fmtTgDuration(_ sec: Double) -> String {
