@@ -882,10 +882,13 @@ final class PlayerModel: ObservableObject {
     }
 }
 
-/// TG 流本地缓存：分片下载（2MB 一片）+ 断点续传，失败重试，完工后落盘，超 2GB 清最旧。
+/// TG 流本地缓存：分片下载（8MB 一片）+ 断点续传，失败重试，完工后落盘，超 2GB 清最旧。
 /// 未完成的文件留 .part 续传，完工的文件才改名进缓存，缓存文件恒为完整文件。
+/// 1.5.13：分片从 2MB 改到 8MB——电报视频边下边播时，2MB 一片请求太碎，
+/// 每次请求都有 Pyrogram 建流开销，播高码率片会跟不上而反复缓冲；8MB 一片
+/// 请求数减到 1/4，每片能顶更久，播放器不容易断粮。
 enum TGCache {
-    static let segment = 2 * 1024 * 1024
+    static let segment = 8 * 1024 * 1024
     static let cap: Int64 = 2_000_000_000
 
     static var dir: URL {
@@ -966,7 +969,7 @@ actor TGProgressiveStore {
 
     func downloadedBytes() -> Int { intervals.reduce(0) { $0 + $1.count } }
 
-    /// 确保 range 全在缓存里，然后从文件读出来。缺失的洞按 2MB 切分补齐；
+    /// 确保 range 全在缓存里，然后从文件读出来。缺失的洞按 8MB 切分补齐；
     /// 每补一段失败重试 4 次，仍失败则抛错（上层按播放失败处理）。
     /// range 超出文件尾时截到 total 内（超出的部分本就不存在）；完全在尾外则抛 416。
     func bytes(for range: Range<Int>) async throws -> Data {
