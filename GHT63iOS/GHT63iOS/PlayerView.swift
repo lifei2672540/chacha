@@ -466,6 +466,10 @@ final class PlayerModel: ObservableObject {
             ErrorLog.append("换线路 \(group.name) - \(currentEp.title) → 源\(currentSourceIdx) 线\(currentLineIdx)")
             buildPlay()
         } else {
+            // 1.5.14：TG 彻底失败时清掉这集的缓存（残缺 .part 下次重下，不再喂坏字节）
+            if isTG, let url = resolveURL() {
+                TGCache.clear(for: url.absoluteString)
+            }
             errorText = "播放失败：换无可换"
             ErrorLog.append("播放失败换无可换 \(group.name) - \(currentEp.title)")
         }
@@ -907,6 +911,13 @@ enum TGCache {
     static func partFile(for urlString: String) -> URL { dir.appendingPathComponent(fileName(for: urlString) + ".part") }
     static func sidecarFile(for urlString: String) -> URL { dir.appendingPathComponent(fileName(for: urlString) + ".ranges.json") }
 
+    static func clear(for urlString: String) {
+        let fm = FileManager.default
+        try? fm.removeItem(at: finalFile(for: urlString))
+        try? fm.removeItem(at: partFile(for: urlString))
+        try? fm.removeItem(at: sidecarFile(for: urlString))
+    }
+
     static func prune(except keep: URL) {
         let fm = FileManager.default
         let files = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey])) ?? []
@@ -927,7 +938,8 @@ enum TGCache {
     }
 }
 
-/// TG 边下边播的字节源：播放器要哪段就从采集端取哪段（2MB 分片、失败重试），
+/// TG 边下边播的字节源：播放器要哪段就从采集端取哪段（8MB 分片、失败重试），
+/// 1.5.14：启动时校验缓存（防稀疏 .part + 丢区间表冒充整文件，读洞会出 0 字节，播放器直接 -11828）。
 /// 取回的段按偏移写进同一个 .part 文件并记区间；下完改名进缓存，1.2.6 下好的整文件直接复用。
 /// actor 保证区间表与文件写互不交错；同段重复取只会写进相同字节，不会写坏。
 /// final 已存在时不再写 part（整文件恒为完整文件），读优先走 final。
@@ -948,8 +960,8 @@ actor TGProgressiveStore {
         self.sidecarURL = TGCache.sidecarFile(for: remote.absoluteString)
         self.onProgress = onProgress
         let cfg = URLSessionConfiguration.default
-        cfg.timeoutIntervalForRequest = 30
-        cfg.timeoutIntervalForResource = 120
+        cfg.timeoutIntervalForRequest = 60
+        cfg.timeoutIntervalForResource = 300
         self.session = URLSession(configuration: cfg)
         let fm = FileManager.default
         if fm.fileExists(atPath: finalURL.path) {
@@ -962,6 +974,30 @@ actor TGProgressiveStore {
         } else if let size = (try? fm.attributesOfItem(atPath: partURL.path)[.size] as? Int), size > 0 {
             // 无区间表：1.2.6 的 .part 是从头顺序下的前缀
             intervals = [0..<size]
+        }
+        // 1.5.14：校验缓存。区间不能超出 .part 实际大小；头 8 字节必须是 MP4 盒子开头
+        // （尺寸>=8 且类型为 ASCII 字母），全 0 就是稀疏洞。校验不过直接丢弃重下，
+        // 否则读洞会喂给播放器 0 字节，播放器瞬间报 -11828“格式不支持”。
+        if !intervals.isEmpty {
+            let partSize = (try? fm.attributesOfItem(atPath: partURL.path)[.size] as? Int) ?? 0
+            intervals = intervals.compactMap { iv in
+                guard iv.lowerBound < partSize else { return nil }
+                return iv.lowerBound..<min(iv.upperBound, partSize)
+            }
+            var headOK = false
+            if partSize >= 8, let handle = FileHandle(forReadingAtPath: partURL.path) {
+                defer { try? handle.close() }
+                if let bytes = try? handle.read(upToCount: 8), bytes.count == 8 {
+                    let boxSize = bytes.prefix(4).reduce(0) { ($0 << 8) | Int($1) }
+                    let typeOK = bytes[4..<8].allSatisfy { ($0 >= 65 && $0 <= 90) || ($0 >= 97 && $0 <= 122) }
+                    headOK = boxSize >= 8 && boxSize <= 1_000_000_000 && typeOK
+                }
+            }
+            if !headOK {
+                intervals = []
+                try? fm.removeItem(at: partURL)
+                try? fm.removeItem(at: sidecarURL)
+            }
         }
     }
 
@@ -1170,6 +1206,12 @@ final class TGResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
                     info.contentType = "public.mpeg-4"
                     info.contentLength = Int64(total)
                     info.isByteRangeAccessSupported = true
+                }
+                // 1.5.14：moov 在文件尾，后台先把尾段取回来（冷连接建流慢），播放器要 moov 时不用现等
+                if total > 0 {
+                    let tailStart = max(0, total - TGCache.segment)
+                    let store = self.store
+                    Task { _ = try? await store.bytes(for: tailStart..<total) }
                 }
                 request.finishLoading()
             } catch {
