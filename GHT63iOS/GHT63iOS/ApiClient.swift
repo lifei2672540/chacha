@@ -157,21 +157,55 @@ final class ApiClient {
         let q = query([("channel", channel), ("page", "\(page)"), ("page_size", "\(pageSize)")])
         let root = try await getJSON("\(tgBaseUrl)/api/feed?\(q)")
         let total = root["total"] as? Int ?? 0
-        let items = ((root["items"] as? [[String: Any]]) ?? []).compactMap { o -> TgVideo? in
-            guard let id = o["id"] as? String, !id.isEmpty else { return nil }
-            let dur: Double
-            if let d = o["duration"] as? Double { dur = d }
-            else if let d = o["duration"] as? Int { dur = Double(d) }
-            else { dur = 0 }
-            return TgVideo(id: id, channel: o["channel"] as? String ?? "",
-                           channelTitle: o["channel_title"] as? String ?? "",
-                           title: o["title"] as? String ?? "",
-                           caption: o["caption"] as? String ?? "",
-                           date: o["date"] as? String ?? "", duration: dur,
-                           thumbUrl: o["thumb_url"] as? String ?? "",
-                           streamUrl: o["stream_url"] as? String ?? "")
-        }
+        let items = ((root["items"] as? [[String: Any]]) ?? []).compactMap(parseTgVideo)
         return (total, items)
+    }
+
+    /// Telegram 采集端：剧聚合列表（TV 版 getTgShows 同款；channel 为空即全频道）。
+    func getTgShows(channel: String, page: Int, pageSize: Int = 30) async throws -> (Int, [TgShow]) {
+        let q = query([("channel", channel), ("page", "\(page)"), ("page_size", "\(pageSize)")])
+        let root = try await getJSON("\(tgBaseUrl)/api/shows?\(q)")
+        let total = root["total"] as? Int ?? 0
+        let shows = ((root["shows"] as? [[String: Any]]) ?? []).compactMap { o -> TgShow? in
+            guard let id = o["id"] as? String, !id.isEmpty else { return nil }
+            return TgShow(id: id, name: o["name"] as? String ?? "",
+                          epCount: o["ep_count"] as? Int ?? 0, total: o["total"] as? Int ?? 0,
+                          cover: o["cover"] as? String ?? "", latest: o["latest"] as? String ?? "",
+                          channels: o["channels"] as? [String] ?? [])
+        }
+        return (total, shows)
+    }
+
+    /// Telegram 采集端：某剧详情（选集表，集数升序；showId 是列表给的 URL 编码剧名，直接拼路径）。
+    func getTgShowDetail(showId: String) async throws -> (TgShow, [TgVideo]) {
+        let root = try await getJSON("\(tgBaseUrl)/api/shows/\(showId)")
+        guard let id = root["id"] as? String, !id.isEmpty else {
+            throw NSError(domain: "GHT63", code: -1, userInfo: [NSLocalizedDescriptionKey: "剧详情解析失败"])
+        }
+        let show = TgShow(id: id, name: root["name"] as? String ?? "",
+                          epCount: root["ep_count"] as? Int ?? 0, total: root["total"] as? Int ?? 0,
+                          cover: root["cover"] as? String ?? "", latest: root["latest"] as? String ?? "",
+                          channels: root["channels"] as? [String] ?? [])
+        let eps = ((root["episodes"] as? [[String: Any]]) ?? []).compactMap(parseTgVideo)
+        return (show, eps)
+    }
+
+    /// Telegram 视频条目解析（show / episode_no 是 v2 剧聚合加的字段，老接口没有时为空/0）。
+    private func parseTgVideo(_ o: [String: Any]) -> TgVideo? {
+        guard let id = o["id"] as? String, !id.isEmpty else { return nil }
+        let dur: Double
+        if let d = o["duration"] as? Double { dur = d }
+        else if let d = o["duration"] as? Int { dur = Double(d) }
+        else { dur = 0 }
+        return TgVideo(id: id, channel: o["channel"] as? String ?? "",
+                       channelTitle: o["channel_title"] as? String ?? "",
+                       title: o["title"] as? String ?? "",
+                       caption: o["caption"] as? String ?? "",
+                       date: o["date"] as? String ?? "", duration: dur,
+                       thumbUrl: o["thumb_url"] as? String ?? "",
+                       streamUrl: o["stream_url"] as? String ?? "",
+                       show: o["show"] as? String ?? "",
+                       episodeNo: o["episode_no"] as? Int ?? 0)
     }
 
     // MARK: 云端字幕（网页版 autoFetchSubtitle 同款：proxy.php 问 assrt）
